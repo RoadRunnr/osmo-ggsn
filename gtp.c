@@ -777,8 +777,8 @@ static void gtp_destroy_bind_sock(struct gtp_instance *gti)
 	sock_release(gti->sock0);
 }
 
-static int ipv4_pdp_add(struct gtp_instance *gti, uint32_t sgsn_addr,
-			uint32_t ms_addr, uint32_t version, uint64_t tid)
+static int ipv4_pdp_add(struct gtp_instance *gti, uint32_t version,
+			uint32_t sgsn_addr, uint32_t ms_addr, uint64_t tid)
 {
 	uint32_t hash_ms = ipv4_hashfn(ms_addr) % gti->hash_size;
 	uint32_t hash_tid = ipv4_hashfn(tid) % gti->hash_size;
@@ -968,7 +968,8 @@ nla_put_failure:
 static int
 gtp_genl_tunnel_dump(struct sk_buff *skb, struct netlink_callback *cb)
 {
-	int i, k = cb->args[0], tid = cb->args[1], ret;
+	int i, k = cb->args[0], ret;
+	unsigned long tid = cb->args[1];
 	struct gtp_instance *last_gti = (struct gtp_instance *)cb->args[2], *gti;
 	struct pdp_ctx *pctx;
 
@@ -982,7 +983,7 @@ gtp_genl_tunnel_dump(struct sk_buff *skb, struct netlink_callback *cb)
 			last_gti = NULL;
 
 		for (i = k; i < gti->hash_size; i++) {
-			hlist_for_each_entry_rcu(pctx, &gti->addr_hash[i], hlist_tid) {
+			hlist_for_each_entry_rcu(pctx, &gti->tid_hash[i], hlist_tid) {
 				if (tid && tid != pctx->tid)
 					continue;
 				else
