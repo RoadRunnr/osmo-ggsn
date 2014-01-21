@@ -11,19 +11,12 @@
 
 static uint32_t seq;
 
-static struct nlmsghdr *build_msg(int genl_type, char *buf, int i, uint32_t ifidx)
+static struct nlmsghdr *build_msg(int type, char *buf, int i, uint32_t ifidx)
 {
 	struct nlmsghdr *nlh;
-	struct genlmsghdr *genl;
 
-	nlh = mnl_nlmsg_put_header(buf);
-	nlh->nlmsg_type	= genl_type;
-	nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
-	nlh->nlmsg_seq = ++seq;
-
-	genl = mnl_nlmsg_put_extra_header(nlh, sizeof(struct genlmsghdr));
-	genl->cmd = GTP_CMD_TUNNEL_NEW;
-	genl->version = 0;
+	nlh = genl_nlmsg_build_hdr(buf, type, NLM_F_ACK, ++seq,
+				   GTP_CMD_TUNNEL_NEW);
 
 	mnl_attr_put_u32(nlh, GTPA_VERSION, GTP_V0);
 	mnl_attr_put_u32(nlh, GTPA_LINK, ifidx);

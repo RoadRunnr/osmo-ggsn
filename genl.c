@@ -6,6 +6,25 @@
 #include <libmnl/libmnl.h>
 #include <linux/genetlink.h>
 
+struct nlmsghdr *
+genl_nlmsg_build_hdr(char *buf, uint16_t type, uint16_t flags, uint32_t seq,
+		     uint8_t cmd)
+{
+	struct nlmsghdr *nlh;
+	struct genlmsghdr *genl;
+
+	nlh = mnl_nlmsg_put_header(buf);
+	nlh->nlmsg_type = type;
+	nlh->nlmsg_flags = NLM_F_REQUEST | flags;
+	nlh->nlmsg_seq = seq;
+
+	genl = mnl_nlmsg_put_extra_header(nlh, sizeof(struct genlmsghdr));
+	genl->cmd = cmd;
+	genl->version = 0;
+
+	return nlh;
+}
+
 static int genl_ctrl_validate_cb(const struct nlattr *attr, void *data)
 {
 	const struct nlattr **tb = data;
