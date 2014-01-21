@@ -124,6 +124,8 @@ struct gtp_instance {
 	struct hlist_head *addr_hash;
 };
 
+static LIST_HEAD(gtp_instance_list); /* XXX netns */
+
 static inline uint32_t gtp0_hashfn(uint64_t tid)
 {
 	uint32_t *tid32 = (uint32_t *) &tid;
@@ -661,6 +663,8 @@ static int gtp_newlink(struct net *src_net, struct net_device *dev,
 	if (err < 0)
 		goto err1;
 
+	list_add_rcu(&gti->list, &gtp_instance_list);
+
 	pr_info("registered new netdev\n");
 
 	return 0;
@@ -671,7 +675,10 @@ err1:
 
 static void gtp_dellink(struct net_device *dev, struct list_head *head)
 {
+	struct gtp_instance *gti = netdev_priv(dev);
+
 	unregister_netdevice_queue(dev, head);
+	list_del_rcu(&gti->list);
 }
 
 static int gtp_changelink(struct net_device *dev, struct nlattr *tb[],
@@ -888,12 +895,99 @@ static int gtp_genl_tunnel_delete(struct sk_buff *skb, struct genl_info *info)
 
 static int gtp_genl_tunnel_get(struct sk_buff *skb, struct genl_info *info)
 {
+	struct net *net = sock_net(skb->sk);
+	struct net_device *dev;
+
+	pr_info("get tunnel\n");
+
+	if (!info->attrs[GTPA_VERSION] ||
+	    !info->attrs[GTPA_LINK])
+		return -EINVAL;
+
+	dev = dev_get_by_index(net, nla_get_u32(info->attrs[GTPA_LINK]));
+	if (dev == NULL)
+		return -ENOENT;
+
+	if (strncmp(dev->name, "gtp", 3) != 0)
+		return -EOPNOTSUPP;
+
+	if (info->attrs[GTPA_TID])
+		pr_info("by tid\n");
+	else if (info->attrs[GTPA_MS_ADDRESS])
+		pr_info("by ms\n");
+	else
+		return -EINVAL;
+
 	return 0;
 }
 
-static int gtp_genl_tunnel_dump(struct sk_buff *skb, struct netlink_callback *cb)
+static struct genl_family gtp_genl_family = {
+	.id		= GENL_ID_GENERATE,
+	.name		= "gtp",
+	.version	= 0,
+	.hdrsize	= 0,
+	.maxattr	= GTPA_MAX,
+	.netnsok	= true,
+};
+
+static int
+gtp_genl_fill_info(struct sk_buff *skb, uint32_t snd_portid, uint32_t snd_seq,
+		   uint32_t type, struct pdp_ctx *pctx)
 {
-	return 0;
+	void *genlh;
+
+	genlh = genlmsg_put(skb, snd_portid, snd_seq, &gtp_genl_family, 0,
+			    type);
+	if (genlh == NULL)
+		goto nlmsg_failure;
+
+	if (nla_put_u32(skb, GTPA_VERSION, pctx->tid) ||
+	    nla_put_u32(skb, GTPA_SGSN_ADDRESS, pctx->sgsn_addr.ip4) ||
+	    nla_put_u32(skb, GTPA_MS_ADDRESS, pctx->ms_addr.ip4) ||
+	    nla_put_u32(skb, GTPA_TID, pctx->tid))
+		goto nla_put_failure;
+
+	return genlmsg_end(skb, genlh);
+
+nlmsg_failure:
+nla_put_failure:
+	return -EMSGSIZE;
+}
+
+static int
+gtp_genl_tunnel_dump(struct sk_buff *skb, struct netlink_callback *cb)
+{
+	int i, k = cb->args[0], tid = cb->args[1], ret;
+	struct gtp_instance *last_gti = (struct gtp_instance *)cb->args[2], *gti;
+	struct pdp_ctx *pctx;
+
+	list_for_each_entry_rcu(gti, &gtp_instance_list, list) {
+		if (last_gti && last_gti != gti)
+			continue;
+		else
+			last_gti = NULL;
+
+		for (i = k; i < gti->hash_size; i++) {
+			hlist_for_each_entry_rcu(pctx, &gti->addr_hash[i], hlist_tid) {
+				if (tid && tid != pctx->tid)
+					continue;
+				else
+					tid = 0;
+
+				ret = gtp_genl_fill_info(skb,
+							 NETLINK_CB(cb->skb).portid,
+							 cb->nlh->nlmsg_seq,
+							 cb->nlh->nlmsg_type, pctx);
+				if (ret < 0) {
+					cb->args[0] = i;
+					cb->args[1] = pctx->tid;
+					goto out;
+				}
+			}
+		}
+	}
+out:
+	return skb->len;
 }
 
 static struct nla_policy gtp_genl_policy[GTPA_MAX + 1] = {
@@ -923,15 +1017,6 @@ static const struct genl_ops gtp_genl_ops[] = {
 		.policy = gtp_genl_policy,
 		.flags = GENL_ADMIN_PERM,
 	},
-};
-
-static struct genl_family gtp_genl_family = {
-	.id		= GENL_ID_GENERATE,
-	.name		= "gtp",
-	.version	= 0,
-	.hdrsize	= 0,
-	.maxattr	= GTPA_MAX,
-	.netnsok	= true,
 };
 
 static int __init gtp_init(void)
