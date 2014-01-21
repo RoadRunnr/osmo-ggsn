@@ -41,6 +41,7 @@ int main(int argc, char *argv[])
 	struct nlmsghdr *nlh;
 	struct genlmsghdr *genl;
 	unsigned int portid;
+	uint32_t gtp_ifidx = if_nametoindex(argv[1]);
 	int32_t genl_id;
 	int i;
 
@@ -64,7 +65,7 @@ int main(int argc, char *argv[])
 	printf("adding 1000000 tunnels\n");
 
 	for (i = 0; i < 1000000; i++) {
-		nlh = build_msg(genl_id, buf, i, if_nametoindex(argv[1]));
+		nlh = build_msg(genl_id, buf, i, gtp_ifidx);
 
 		if (genl_socket_talk(nl, nlh, NULL, NULL) < 0)
 			break;
