@@ -80,11 +80,6 @@ int main(int argc, char *argv[])
 	nlh = genl_nlmsg_build_hdr(buf, genl_id, NLM_F_DUMP, 0,
 				   GTP_CMD_TUNNEL_GET);
 
-	mnl_nlmsg_fprintf(stdout, nlh, nlh->nlmsg_len,
-			  sizeof(struct genlmsghdr));
-
-	printf("%p\n", genl_gtp_attr_cb);
-
 	if (genl_socket_talk(nl, nlh, seq, genl_gtp_attr_cb, &pdp) < 0) {
 		perror("genl_socket_talk");
 		return 0;
