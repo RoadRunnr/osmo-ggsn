@@ -961,6 +961,9 @@ gtp_genl_tunnel_dump(struct sk_buff *skb, struct netlink_callback *cb)
 	struct gtp_instance *last_gti = (struct gtp_instance *)cb->args[2], *gti;
 	struct pdp_ctx *pctx;
 
+	if (cb->args[4])
+		return 0;
+
 	list_for_each_entry_rcu(gti, &gtp_instance_list, list) {
 		if (last_gti && last_gti != gti)
 			continue;
@@ -987,6 +990,7 @@ gtp_genl_tunnel_dump(struct sk_buff *skb, struct netlink_callback *cb)
 			}
 		}
 	}
+	cb->args[4] = 1;
 out:
 	return skb->len;
 }
