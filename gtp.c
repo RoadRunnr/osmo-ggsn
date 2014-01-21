@@ -981,6 +981,7 @@ gtp_genl_tunnel_dump(struct sk_buff *skb, struct netlink_callback *cb)
 				if (ret < 0) {
 					cb->args[0] = i;
 					cb->args[1] = pctx->tid;
+					cb->args[2] = (unsigned long)gti;
 					goto out;
 				}
 			}
