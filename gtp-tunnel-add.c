@@ -60,7 +60,7 @@ int main(int argc, char *argv[])
 	for (i = 0; i < 1000000; i++) {
 		nlh = build_msg(genl_id, buf, i, gtp_ifidx);
 
-		if (genl_socket_talk(nl, nlh, NULL, NULL) < 0)
+		if (genl_socket_talk(nl, nlh, seq, NULL, NULL) < 0)
 			break;
 	}
 
