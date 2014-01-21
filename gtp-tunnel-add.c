@@ -34,7 +34,7 @@ int main(int argc, char *argv[])
 	struct nlmsghdr *nlh;
 	struct genlmsghdr *genl;
 	unsigned int portid;
-	uint32_t gtp_ifidx = if_nametoindex(argv[1]);
+	uint32_t gtp_ifidx;
 	int32_t genl_id;
 	int i;
 
@@ -42,6 +42,7 @@ int main(int argc, char *argv[])
 		printf("%s <gtp device>\n", argv[0]);
 		exit(EXIT_FAILURE);
 	}
+	gtp_ifidx = if_nametoindex(argv[1]);
 
 	nl = genl_socket_open();
 	if (nl == NULL) {
