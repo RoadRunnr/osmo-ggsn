@@ -7,6 +7,7 @@
 #include <linux/genetlink.h>
 
 #include "gtp.h"
+#include "genl.h"
 
 static uint32_t seq;
 
@@ -33,30 +34,6 @@ static struct nlmsghdr *build_msg(int genl_type, char *buf, int i, uint32_t ifid
 	return nlh;
 }
 
-static int my_mnl_talk(struct mnl_socket *nl, struct nlmsghdr *nlh,
-		       uint32_t portid)
-{
-	char buf[MNL_SOCKET_BUFFER_SIZE];
-	int ret;
-
-	if (mnl_socket_sendto(nl, nlh, nlh->nlmsg_len) < 0) {
-		perror("mnl_socket_send");
-		exit(EXIT_FAILURE);
-	}
-
-	ret = mnl_socket_recvfrom(nl, buf, sizeof(buf));
-	while (ret > 0) {
-		ret = mnl_cb_run(buf, ret, seq, portid, NULL, NULL);
-		if (ret <= 0)
-			break;
-		ret = mnl_socket_recvfrom(nl, buf, sizeof(buf));
-	}
-	if (ret == -1) {
-		perror("error");
-		exit(EXIT_FAILURE);
-	}
-}
-
 int main(int argc, char *argv[])
 {
 	struct mnl_socket *nl;
@@ -64,31 +41,32 @@ int main(int argc, char *argv[])
 	struct nlmsghdr *nlh;
 	struct genlmsghdr *genl;
 	unsigned int portid;
+	int32_t genl_id;
 	int i;
 
-	if (argc != 3) {
-		printf("%s <GTP genetlink family id> <gtp device>\n", argv[0]);
+	if (argc != 2) {
+		printf("%s <gtp device>\n", argv[0]);
 		exit(EXIT_FAILURE);
 	}
 
-	nl = mnl_socket_open(NETLINK_GENERIC);
+	nl = genl_socket_open();
 	if (nl == NULL) {
 		perror("mnl_socket_open");
 		exit(EXIT_FAILURE);
 	}
 
-	if (mnl_socket_bind(nl, 0, MNL_SOCKET_AUTOPID) < 0) {
-		perror("mnl_socket_bind");
+	genl_id = genl_lookup_family(nl, "gtp");
+	if (genl_id < 0) {
+		printf("not found gtp genl family\n");
 		exit(EXIT_FAILURE);
 	}
-	portid = mnl_socket_get_portid(nl);
 
 	printf("adding 1000000 tunnels\n");
 
 	for (i = 0; i < 1000000; i++) {
-		nlh = build_msg(atoi(argv[1]), buf, i, if_nametoindex(argv[2]));
+		nlh = build_msg(genl_id, buf, i, if_nametoindex(argv[1]));
 
-		if (my_mnl_talk(nl, nlh, portid) < 0)
+		if (genl_socket_talk(nl, nlh, NULL, NULL) < 0)
 			break;
 	}
 
