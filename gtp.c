@@ -778,7 +778,7 @@ static void gtp_destroy_bind_sock(struct gtp_instance *gti)
 }
 
 static int ipv4_pdp_add(struct gtp_instance *gti, uint32_t sgsn_addr,
-			uint32_t ms_addr, uint32_t version, uint32_t tid)
+			uint32_t ms_addr, uint32_t version, uint64_t tid)
 {
 	uint32_t hash_ms = ipv4_hashfn(ms_addr) % gti->hash_size;
 	uint32_t hash_tid = ipv4_hashfn(tid) % gti->hash_size;
@@ -806,9 +806,10 @@ static int gtp_genl_tunnel_new(struct sk_buff *skb, struct genl_info *info)
 	struct net *net = sock_net(skb->sk);
 	struct net_device *dev;
 	struct gtp_instance *gti;
+	u32 gtp_version, link, sgsn_addr, ms_addr, tid;
 	int err;
 
-	//pr_info("adding new tunnel\n");
+	pr_info("adding new tunnel\n");
 
 	if (!info->attrs[GTPA_VERSION] ||
 	    !info->attrs[GTPA_LINK] ||
@@ -816,6 +817,14 @@ static int gtp_genl_tunnel_new(struct sk_buff *skb, struct genl_info *info)
 	    !info->attrs[GTPA_MS_ADDRESS] ||
 	    !info->attrs[GTPA_TID])
 		return -EINVAL;
+
+	gtp_version = nla_get_u32(info->attrs[GTPA_VERSION]);
+	link = nla_get_u32(info->attrs[GTPA_LINK]);
+	sgsn_addr = nla_get_u32(info->attrs[GTPA_SGSN_ADDRESS]);
+	ms_addr = nla_get_u32(info->attrs[GTPA_MS_ADDRESS]);
+	tid = nla_get_u64(info->attrs[GTPA_TID]);
+
+	pr_info("  tunnel id = %u\n", tid);
 
 	dev = dev_get_by_index(net, nla_get_u32(info->attrs[GTPA_LINK]));
 	if (dev == NULL)
@@ -851,7 +860,7 @@ static int gtp_genl_tunnel_new(struct sk_buff *skb, struct genl_info *info)
 			goto err2;
 	}
 
-	err = ipv4_pdp_add(gti, 0, 0, 0, 0);
+	err = ipv4_pdp_add(gti, gtp_version, sgsn_addr, ms_addr, tid);
 	if (err < 0)
 		goto err3;
 
@@ -941,10 +950,12 @@ gtp_genl_fill_info(struct sk_buff *skb, uint32_t snd_portid, uint32_t snd_seq,
 	if (genlh == NULL)
 		goto nlmsg_failure;
 
+	pr_info("filling info for tunnel %llu\n", pctx->tid);
+
 	if (nla_put_u32(skb, GTPA_VERSION, pctx->tid) ||
 	    nla_put_u32(skb, GTPA_SGSN_ADDRESS, pctx->sgsn_addr.ip4) ||
 	    nla_put_u32(skb, GTPA_MS_ADDRESS, pctx->ms_addr.ip4) ||
-	    nla_put_u32(skb, GTPA_TID, pctx->tid))
+	    nla_put_u64(skb, GTPA_TID, pctx->tid))
 		goto nla_put_failure;
 
 	return genlmsg_end(skb, genlh);

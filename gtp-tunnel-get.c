@@ -27,7 +27,7 @@ static int genl_gtp_validate_cb(const struct nlattr *attr, void *data)
 
 	switch(type) {
 	case GTPA_TID:
-		if (mnl_attr_validate(attr, MNL_TYPE_U32) < 0) {
+		if (mnl_attr_validate(attr, MNL_TYPE_U64) < 0) {
 			perror("mnl_attr_validate");
 			return MNL_CB_ERROR;
 		}
