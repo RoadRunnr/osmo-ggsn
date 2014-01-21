@@ -22,7 +22,7 @@ static struct nlmsghdr *build_msg(int type, char *buf, int i, uint32_t ifidx)
 	mnl_attr_put_u32(nlh, GTPA_LINK, ifidx);
 	mnl_attr_put_u32(nlh, GTPA_SGSN_ADDRESS, 0); /* XXX nested */
 	mnl_attr_put_u32(nlh, GTPA_MS_ADDRESS, i); /* XXX nested */
-	mnl_attr_put_u32(nlh, GTPA_TID, i);
+	mnl_attr_put_u64(nlh, GTPA_TID, i);
 
 	return nlh;
 }
@@ -36,10 +36,9 @@ int main(int argc, char *argv[])
 	unsigned int portid;
 	uint32_t gtp_ifidx;
 	int32_t genl_id;
-	int i;
 
-	if (argc != 2) {
-		printf("%s <gtp device>\n", argv[0]);
+	if (argc != 3) {
+		printf("%s <gtp device> <tid>\n", argv[0]);
 		exit(EXIT_FAILURE);
 	}
 	gtp_ifidx = if_nametoindex(argv[1]);
@@ -56,16 +55,10 @@ int main(int argc, char *argv[])
 		exit(EXIT_FAILURE);
 	}
 
-	printf("adding 1000000 tunnels\n");
+	nlh = build_msg(genl_id, buf, atoi(argv[2]), gtp_ifidx);
 
-	for (i = 0; i < 1000000; i++) {
-		nlh = build_msg(genl_id, buf, i, gtp_ifidx);
-
-		if (genl_socket_talk(nl, nlh, seq, NULL, NULL) < 0)
-			break;
-	}
-
-	printf("done\n");
+	if (genl_socket_talk(nl, nlh, seq, NULL, NULL) < 0)
+		perror("genl_socket_talk");
 
 	mnl_socket_close(nl);
 
