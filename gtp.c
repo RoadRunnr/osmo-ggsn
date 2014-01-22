@@ -108,6 +108,8 @@ struct pdp_ctx {
 struct gtp_instance {
 	struct list_head list;
 
+	bool socket_enabled;
+
 	/* address for local UDP socket */
 	struct sockaddr_in gtp0_addr;
 	struct sockaddr_in gtp1u_addr;
@@ -117,6 +119,7 @@ struct gtp_instance {
 	struct socket *sock1u;
 
 	struct net_device *dev;
+	struct net_device *real_dev;
 
 	/* FIXME: hash / tree of pdp contexts */
 	unsigned int hash_size;
@@ -281,7 +284,7 @@ static int gtp0_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	skb_dst_drop(skb);
 	nf_reset(skb);
 
-	rc = dev_forward_skb(gti->dev, skb);
+	rc = dev_forward_skb(gti->real_dev, skb);
 
 drop_put_rcu:
 	rcu_read_unlock_bh();
@@ -365,7 +368,7 @@ static int gtp1u_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	skb_dst_drop(skb);
 	nf_reset(skb);
 
-	rc = dev_forward_skb(gti->dev, skb);
+	rc = dev_forward_skb(gti->real_dev, skb);
 
 drop_put_rcu:
 	rcu_read_unlock_bh();
@@ -583,19 +586,6 @@ static const struct net_device_ops gtp_netdev_ops = {
 	.ndo_start_xmit		= gtp_dev_xmit,
 };
 
-enum {
-	IFLA_GTP_UNSPEC,
-	IFLA_GTP_LOCAL_ADDR_IPV4,
-	IFLA_GTP_LOCAL_ADDR_IPV6,
-	__IFLA_GTP_MAX,
-};
-#define IFLA_GTP_MAX	(__IFLA_GTP_MAX - 1)
-
-static const struct nla_policy gtp_link_policy[IFLA_GTP_MAX + 1] = {
-	[IFLA_GTP_LOCAL_ADDR_IPV4] = { .len = sizeof(struct in_addr) },
-	[IFLA_GTP_LOCAL_ADDR_IPV6] = { .len = sizeof(struct in6_addr) },
-};
-
 static void gtp_link_setup(struct net_device *dev)
 {
 	ether_setup(dev);
@@ -618,54 +608,45 @@ static int gtp_link_validate(struct nlattr *tb[], struct nlattr *data[])
 			return -EADDRNOTAVAIL;
 	}
 
-	if (!data)
-		return 0;
-
-	if (data[IFLA_GTP_LOCAL_ADDR_IPV4] &&
-	    data[IFLA_GTP_LOCAL_ADDR_IPV6])
-		return -EINVAL;
-
-	if (data[IFLA_GTP_LOCAL_ADDR_IPV4])
-		return 0;
-	else if (data[IFLA_GTP_LOCAL_ADDR_IPV6])
-		return 0;
-
-	return -EINVAL;
+	return 0;
 }
 
 static int gtp_newlink(struct net *src_net, struct net_device *dev,
 			struct nlattr *tb[], struct nlattr *data[])
 {
-	struct gtp_instance *gti = netdev_priv(dev);
+	struct net_device *real_dev;
+	struct gtp_instance *gti;
 	int err;
 
-	pr_info("calling newlink gtp ...\n");
+	pr_info("gtp_newlink\n");
 
 	if (!tb[IFLA_LINK])
 		return -EINVAL;
-	gti->dev = __dev_get_by_index(src_net, nla_get_u32(tb[IFLA_LINK]));
 
-	if (data && data[IFLA_GTP_LOCAL_ADDR_IPV4]) {
-		gti->gtp0_addr.sin_addr.s_addr =
-		gti->gtp1u_addr.sin_addr.s_addr =
-			nla_get_u32(data[IFLA_GTP_LOCAL_ADDR_IPV4]);
-	}
+	real_dev = __dev_get_by_index(src_net, nla_get_u32(tb[IFLA_LINK]));
+	if (!real_dev)
+		return -ENODEV;
 
-	if (dev->type == ARPHRD_ETHER && !tb[IFLA_ADDRESS])
+	dev_hold(real_dev);
+
+	if (real_dev->type == ARPHRD_ETHER && !tb[IFLA_ADDRESS])
 		eth_hw_addr_random(dev);
 
 	if (!tb[IFLA_MTU])
-		dev->mtu = gti->dev->mtu;
-	else if (dev->mtu > gti->dev->mtu)
+		dev->mtu = real_dev->mtu;
+	else if (dev->mtu > real_dev->mtu)
 		return -EINVAL;
 
 	err = register_netdevice(dev);
 	if (err < 0)
 		goto err1;
 
+	gti = netdev_priv(dev);
+	gti->dev = dev;
+	gti->real_dev = real_dev;
 	list_add_rcu(&gti->list, &gtp_instance_list);
 
-	pr_info("registered new netdev\n");
+	pr_info("registered new %s interface\n", dev->name);
 
 	return 0;
 err1:
@@ -677,50 +658,51 @@ static void gtp_dellink(struct net_device *dev, struct list_head *head)
 {
 	struct gtp_instance *gti = netdev_priv(dev);
 
-	unregister_netdevice_queue(dev, head);
+	dev_put(gti->real_dev);
 	list_del_rcu(&gti->list);
-}
-
-static int gtp_changelink(struct net_device *dev, struct nlattr *tb[],
-			  struct nlattr *data[])
-{
-	/* FIXME: local IP address for GTP UDP sockets */
-	return -EOPNOTSUPP;
-}
-
-static size_t gtp_link_get_size(const struct net_device *dev)
-{
-	return nla_total_size(sizeof(struct in_addr)) +
-	       nla_total_size(sizeof(struct in6_addr));
-}
-
-static int gtp_link_fill_info(struct sk_buff *skb, const struct net_device *dev)
-{
-	struct gtp_instance *gti = netdev_priv(dev);
-
-	if (nla_put_u32(skb, IFLA_GTP_LOCAL_ADDR_IPV4,
-			gti->gtp0_addr.sin_addr.s_addr) < 0)
-		goto nla_put_failure;
-
-	return 0;
-
-nla_put_failure:
-	return -EMSGSIZE;
+	dev_hold(dev); /* XXX fix refcount problems */
+	unregister_netdevice_queue(dev, head);
 }
 
 static struct rtnl_link_ops gtp_link_ops __read_mostly = {
 	.kind		= "gtp",
-	.maxtype	= IFLA_GTP_MAX,
-	.policy		= gtp_link_policy,
 	.priv_size	= sizeof(struct gtp_instance),
 	.setup		= gtp_link_setup,
 	.validate	= gtp_link_validate,
 	.newlink	= gtp_newlink,
 	.dellink	= gtp_dellink,
-	.changelink	= gtp_changelink,
-	.get_size	= gtp_link_get_size,
-	.fill_info	= gtp_link_fill_info,
 };
+
+static int gtp_hashtable_new(struct gtp_instance *gti, int hsize)
+{
+	int i;
+
+	gti->addr_hash = kmalloc(sizeof(struct hlist_head) * hsize, GFP_KERNEL);
+	if (gti->addr_hash == NULL)
+		return -ENOMEM;
+
+	gti->tid_hash= kmalloc(sizeof(struct hlist_head) * hsize, GFP_KERNEL);
+	if (gti->tid_hash == NULL)
+		goto err1;
+
+	gti->hash_size = hsize;
+
+	for (i = 0; i < hsize; i++) {
+		INIT_HLIST_HEAD(&gti->addr_hash[i]);
+		INIT_HLIST_HEAD(&gti->tid_hash[i]);
+	}
+	return 0;
+err1:
+	kfree(gti->addr_hash);
+	return -ENOMEM;
+}
+
+static void gtp_hashtable_free(struct gtp_instance *gti)
+{
+	/* XXX release tunnels in the hashes*/
+	kfree(gti->addr_hash);
+	kfree(gti->tid_hash);
+}
 
 static int gtp_create_bind_sock(struct gtp_instance *gti)
 {
@@ -777,6 +759,95 @@ static void gtp_destroy_bind_sock(struct gtp_instance *gti)
 	sock_release(gti->sock0);
 }
 
+static struct net_device *gtp_find_dev(int ifindex)
+{
+	struct gtp_instance *gti;
+
+	list_for_each_entry_rcu(gti, &gtp_instance_list, list) {
+		if (ifindex == gti->dev->ifindex)
+			return gti->dev;
+	}
+	return NULL;
+}
+
+/* This configuration routine sets up the hashtable and it links the UDP
+ * socket to the device.
+ */
+static int gtp_genl_cfg_new(struct sk_buff *skb, struct genl_info *info)
+{
+	struct net_device *dev;
+	struct gtp_instance *gti;
+	int err;
+
+	if (!info->attrs[GTPA_LINK])
+		return -EINVAL;
+
+	/* Check if there's an existing gtpX device to configure */
+	dev = gtp_find_dev(nla_get_u32(info->attrs[GTPA_CFG_LINK]));
+	if (dev == NULL)
+		return -ENODEV;
+
+	gti = netdev_priv(dev);
+
+	/* Create the UDP socket if needed */
+	if (info->nlhdr->nlmsg_flags & NLM_F_CREATE) {
+		if (gti->socket_enabled)
+			return -EBUSY;
+
+		if (!info->attrs[GTPA_CFG_LOCAL_ADDR_IPV4])
+			return -EINVAL;
+
+		gti->gtp0_addr.sin_addr.s_addr =
+		gti->gtp1u_addr.sin_addr.s_addr =
+			nla_get_u32(info->attrs[GTPA_CFG_LOCAL_ADDR_IPV4]);
+
+		/* XXX fix hardcoded hashtable size */
+		err = gtp_hashtable_new(gti, 1024);
+		if (err < 0)
+			return err;
+
+		err = gtp_create_bind_sock(gti);
+		if (err < 0)
+			goto err1;
+
+		gti->socket_enabled = true;
+	} else {
+		/* XXX configuration updates not yet supported */
+		return -EOPNOTSUPP;
+	}
+
+	return 0;
+err1:
+	gtp_hashtable_free(gti);
+	return err;
+}
+
+static int gtp_genl_cfg_get(struct sk_buff *skb, struct genl_info *info)
+{
+	/* XXX */
+	return 0;
+}
+
+static int gtp_genl_cfg_delete(struct sk_buff *skb, struct genl_info *info)
+{
+	struct net_device *dev;
+	struct gtp_instance *gti;
+
+	if (!info->attrs[GTPA_LINK])
+		return -EINVAL;
+
+	/* Check if there's an existing gtpX device to configure */
+	dev = gtp_find_dev(nla_get_u32(info->attrs[GTPA_CFG_LINK]));
+	if (dev == NULL)
+		return -ENODEV;
+
+	gti = netdev_priv(dev);
+	gtp_destroy_bind_sock(gti);
+	gtp_hashtable_free(gti);
+
+	return 0;
+}
+
 static int ipv4_pdp_add(struct gtp_instance *gti, uint32_t version,
 			uint32_t sgsn_addr, uint32_t ms_addr, uint64_t tid)
 {
@@ -799,15 +870,11 @@ static int ipv4_pdp_add(struct gtp_instance *gti, uint32_t version,
 	return 0;
 }
 
-static int gtp_tunnels;
-
 static int gtp_genl_tunnel_new(struct sk_buff *skb, struct genl_info *info)
 {
-	struct net *net = sock_net(skb->sk);
 	struct net_device *dev;
 	struct gtp_instance *gti;
 	u32 gtp_version, link, sgsn_addr, ms_addr, tid;
-	int err;
 
 	pr_info("adding new tunnel\n");
 
@@ -818,6 +885,16 @@ static int gtp_genl_tunnel_new(struct sk_buff *skb, struct genl_info *info)
 	    !info->attrs[GTPA_TID])
 		return -EINVAL;
 
+	/* Check if there's an existing gtpX device to configure */
+	dev = gtp_find_dev(nla_get_u32(info->attrs[GTPA_LINK]));
+	if (dev == NULL)
+		return -ENODEV;
+
+	gti = netdev_priv(dev);
+
+	if (!gti->socket_enabled)
+		return -ENETDOWN;
+
 	gtp_version = nla_get_u32(info->attrs[GTPA_VERSION]);
 	link = nla_get_u32(info->attrs[GTPA_LINK]);
 	sgsn_addr = nla_get_u32(info->attrs[GTPA_SGSN_ADDRESS]);
@@ -826,58 +903,12 @@ static int gtp_genl_tunnel_new(struct sk_buff *skb, struct genl_info *info)
 
 	pr_info("  tunnel id = %u\n", tid);
 
-	dev = dev_get_by_index(net, nla_get_u32(info->attrs[GTPA_LINK]));
-	if (dev == NULL)
-		return -ENOENT;
-
-	if (strncmp(dev->name, "gtp", 3) != 0)
-		return -EOPNOTSUPP;
-
-	gti = netdev_priv(dev);
-
-	if (gtp_tunnels == 0) {
-		int i;
-
-		gti->addr_hash= kmalloc(sizeof(struct hlist_head) * 1024,
-					 GFP_KERNEL);
-		if (gti->addr_hash == NULL)
-			return -ENOMEM;
-
-		gti->tid_hash= kmalloc(sizeof(struct hlist_head) * 1024,
-					 GFP_KERNEL);
-		if (gti->tid_hash == NULL)
-			goto err1;
-
-		gti->hash_size = 1024;
-
-		for (i = 0; i < 1024; i++) {
-			INIT_HLIST_HEAD(&gti->addr_hash[i]);
-			INIT_HLIST_HEAD(&gti->tid_hash[i]);
-		}
-
-		err = gtp_create_bind_sock(gti);
-		if (err < 0)
-			goto err2;
-	}
-
-	err = ipv4_pdp_add(gti, gtp_version, sgsn_addr, ms_addr, tid);
-	if (err < 0)
-		goto err3;
-
-	gtp_tunnels++;
-	return 0;
-err3:
-	gtp_destroy_bind_sock(gti);
-err2:
-	kfree(gti->addr_hash);
-err1:
-	kfree(gti->tid_hash);
-	return err;
+	return ipv4_pdp_add(gti, gtp_version, sgsn_addr, ms_addr, tid);
 }
 
 static int gtp_genl_tunnel_delete(struct sk_buff *skb, struct genl_info *info)
 {
-	struct net *net = sock_net(skb->sk);
+	struct gtp_instance *gti;
 	struct net_device *dev;
 
 	pr_info("deleting tunnel\n");
@@ -889,23 +920,22 @@ static int gtp_genl_tunnel_delete(struct sk_buff *skb, struct genl_info *info)
 	    !info->attrs[GTPA_TID])
 		return -EINVAL;
 
-	dev = dev_get_by_index(net, nla_get_u32(info->attrs[GTPA_LINK]));
+	/* Check if there's an existing gtpX device to configure */
+	dev = gtp_find_dev(nla_get_u32(info->attrs[GTPA_LINK]));
 	if (dev == NULL)
-		return -ENOENT;
+		return -ENODEV;
 
-	if (strncmp(dev->name, "gtp", 3) != 0)
-		return -EOPNOTSUPP;
+	gti = netdev_priv(dev);
 
-	if (--gtp_tunnels == 0)
-		gtp_destroy_bind_sock(netdev_priv(dev));
+	/* XXX not yet implemented */
 
 	return 0;
 }
 
 static int gtp_genl_tunnel_get(struct sk_buff *skb, struct genl_info *info)
 {
-	struct net *net = sock_net(skb->sk);
 	struct net_device *dev;
+	struct gtp_instance *gti;
 
 	pr_info("get tunnel\n");
 
@@ -913,12 +943,12 @@ static int gtp_genl_tunnel_get(struct sk_buff *skb, struct genl_info *info)
 	    !info->attrs[GTPA_LINK])
 		return -EINVAL;
 
-	dev = dev_get_by_index(net, nla_get_u32(info->attrs[GTPA_LINK]));
+	/* Check if there's an existing gtpX device to configure */
+	dev = gtp_find_dev(nla_get_u32(info->attrs[GTPA_LINK]));
 	if (dev == NULL)
-		return -ENOENT;
+		return -ENODEV;
 
-	if (strncmp(dev->name, "gtp", 3) != 0)
-		return -EOPNOTSUPP;
+	gti = netdev_priv(dev);
 
 	if (info->attrs[GTPA_TID])
 		pr_info("by tid\n");
@@ -1015,6 +1045,24 @@ static struct nla_policy gtp_genl_policy[GTPA_MAX + 1] = {
 };
 
 static const struct genl_ops gtp_genl_ops[] = {
+	{
+		.cmd = GTP_CMD_CFG_NEW,
+		.doit = gtp_genl_cfg_new,
+		.policy = gtp_genl_policy,
+		.flags = GENL_ADMIN_PERM,
+	},
+	{
+		.cmd = GTP_CMD_CFG_DELETE,
+		.doit = gtp_genl_cfg_delete,
+		.policy = gtp_genl_policy,
+		.flags = GENL_ADMIN_PERM,
+	},
+	{
+		.cmd = GTP_CMD_CFG_GET,
+		.doit = gtp_genl_cfg_get,
+		.policy = gtp_genl_policy,
+		.flags = GENL_ADMIN_PERM,
+	},
 	{
 		.cmd = GTP_CMD_TUNNEL_NEW,
 		.doit = gtp_genl_tunnel_new,
