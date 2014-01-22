@@ -396,11 +396,6 @@ static int gtp_dev_init(struct net_device *dev)
 	return 0;
 }
 
-static void gtp_dev_uninit(struct net_device *dev)
-{
-	dev_put(dev);
-}
-
 #define IP_UDP_LEN	(sizeof(struct iphdr) + sizeof(struct udphdr))
 
 static struct rtable *
@@ -582,7 +577,6 @@ tx_error:
 
 static const struct net_device_ops gtp_netdev_ops = {
 	.ndo_init		= gtp_dev_init,
-	.ndo_uninit		= gtp_dev_uninit,
 	.ndo_start_xmit		= gtp_dev_xmit,
 };
 
@@ -660,7 +654,6 @@ static void gtp_dellink(struct net_device *dev, struct list_head *head)
 
 	dev_put(gti->real_dev);
 	list_del_rcu(&gti->list);
-	dev_hold(dev); /* XXX fix refcount problems */
 	unregister_netdevice_queue(dev, head);
 }
 
