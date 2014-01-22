@@ -746,17 +746,21 @@ static int gtp_create_bind_sock(struct gtp_instance *gti)
 	return 0;
 
 out_free1:
-	sock_release(gti->sock1u);
+	kernel_sock_shutdown(gti->sock1u, SHUT_RDWR);
+	sk_release_kernel(gti->sock1u->sk);
 out_free0:
-	sock_release(gti->sock0);
+	kernel_sock_shutdown(gti->sock0, SHUT_RDWR);
+	sk_release_kernel(gti->sock0->sk);
 out:
 	return rc;
 }
 
 static void gtp_destroy_bind_sock(struct gtp_instance *gti)
 {
-	sock_release(gti->sock1u);
-	sock_release(gti->sock0);
+	kernel_sock_shutdown(gti->sock1u, SHUT_RDWR);
+	sk_release_kernel(gti->sock1u->sk);
+	kernel_sock_shutdown(gti->sock0, SHUT_RDWR);
+	sk_release_kernel(gti->sock0->sk);
 }
 
 static struct net_device *gtp_find_dev(int ifindex)
@@ -1107,9 +1111,17 @@ err1:
 
 static void __exit gtp_fini(void)
 {
-	pr_info("GTP module unloaded\n");
+	struct gtp_instance *gti;
+
+	list_for_each_entry_rcu(gti, &gtp_instance_list, list) {
+		pr_info("delete instance gtp %p\n", gti);
+		gtp_destroy_bind_sock(gti);
+		gtp_hashtable_free(gti);
+	}
 	rtnl_link_unregister(&gtp_link_ops);
 	genl_unregister_family(&gtp_genl_family);
+
+	pr_info("GTP module unloaded\n");
 }
 
 module_init(gtp_init);
