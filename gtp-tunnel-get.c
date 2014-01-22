@@ -2,6 +2,9 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <time.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include <libmnl/libmnl.h>
 #include <linux/genetlink.h>
@@ -10,9 +13,9 @@
 #include "genl.h"
 
 struct gtp_pdp {
-	//struct list_head	list;
-
-	uint64_t		tid;
+	uint64_t	tid;
+	struct in_addr	sgsn_addr;
+	struct in_addr	ms_addr;
 };
 
 static uint32_t seq = 10;
@@ -32,6 +35,13 @@ static int genl_gtp_validate_cb(const struct nlattr *attr, void *data)
 			return MNL_CB_ERROR;
 		}
 		break;
+	case GTPA_SGSN_ADDRESS:
+	case GTPA_MS_ADDRESS:
+		if (mnl_attr_validate(attr, MNL_TYPE_U32) < 0) {
+			perror("mnl_attr_validate");
+			return MNL_CB_ERROR;
+		}
+		break;
 	default:
 		break;
 	}
@@ -47,9 +57,17 @@ static int genl_gtp_attr_cb(const struct nlmsghdr *nlh, void *data)
 
 	mnl_attr_parse(nlh, sizeof(*genl), genl_gtp_validate_cb, tb);
 	if (tb[GTPA_TID])
-		pdp->tid = mnl_attr_get_u32(tb[GTPA_TID]);
+		pdp->tid = mnl_attr_get_u64(tb[GTPA_TID]);
+	if (tb[GTPA_SGSN_ADDRESS]) {
+		pdp->sgsn_addr.s_addr =
+			mnl_attr_get_u32(tb[GTPA_SGSN_ADDRESS]);
+	}
+	if (tb[GTPA_MS_ADDRESS]) {
+		pdp->ms_addr.s_addr = mnl_attr_get_u32(tb[GTPA_MS_ADDRESS]);
+	}
 
-	printf("tid %d\n", pdp->tid);
+	printf("tid %llu ms_addr %s ", pdp->tid, inet_ntoa(pdp->sgsn_addr));
+	printf("sgsn_addr %s\n", inet_ntoa(pdp->ms_addr));
 
 	return MNL_CB_OK;
 }
