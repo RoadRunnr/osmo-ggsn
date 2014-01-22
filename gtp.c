@@ -750,10 +750,14 @@ out:
 
 static void gtp_destroy_bind_sock(struct gtp_instance *gti)
 {
-	kernel_sock_shutdown(gti->sock1u, SHUT_RDWR);
-	sk_release_kernel(gti->sock1u->sk);
-	kernel_sock_shutdown(gti->sock0, SHUT_RDWR);
-	sk_release_kernel(gti->sock0->sk);
+	if (gti->sock1u) {
+		kernel_sock_shutdown(gti->sock1u, SHUT_RDWR);
+		sk_release_kernel(gti->sock1u->sk);
+	}
+	if (gti->sock0) {
+		kernel_sock_shutdown(gti->sock0, SHUT_RDWR);
+		sk_release_kernel(gti->sock0->sk);
+	}
 }
 
 static struct net_device *gtp_find_dev(int ifindex)
