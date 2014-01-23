@@ -193,6 +193,8 @@ static struct pdp_ctx *ipv4_pdp_find(struct gtp_instance *gti,
 	head = &gti->addr_hash[ipv4_hashfn(ms_addr) % gti->hash_size];
 
 	hlist_for_each_entry_rcu(pdp, head, hlist_addr) {
+		pr_info("af %u : pdp->ms %pI4 == ms %pI4\n",
+			pdp->af, &pdp->ms_addr.ip4, &ms_addr);
 		if (pdp->af == AF_INET && pdp->ms_addr.ip4 == ms_addr)
 			return pdp;
 	}
@@ -860,10 +862,13 @@ static int ipv4_pdp_add(struct gtp_instance *gti, uint32_t version,
 	if (pctx == NULL)
 		return -ENOMEM;
 
+	pctx->af = AF_INET;
 	pctx->gtp_version = version;
 	pctx->tid = tid;
 	pctx->sgsn_addr.ip4 = sgsn_addr;
 	pctx->ms_addr.ip4 = ms_addr;
+
+	pr_info("added pdp %p\n", pctx);
 
 	hlist_add_head_rcu(&pctx->hlist_addr, &gti->addr_hash[hash_ms]);
 	hlist_add_head_rcu(&pctx->hlist_tid, &gti->tid_hash[hash_tid]);
