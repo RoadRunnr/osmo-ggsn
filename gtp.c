@@ -386,8 +386,10 @@ static int gtp_dev_init(struct net_device *dev)
 {
 	struct gtp_instance *gti = netdev_priv(dev);
 
+	dev->flags              = IFF_NOARP;
 	gti->dev = dev;
 	eth_hw_addr_random(dev);
+
 	memset(&dev->broadcast[0], 0xff, 6);
 	dev->qdisc_tx_busylock = &gtp_eth_tx_busylock;
 
@@ -413,75 +415,121 @@ ip4_route_output_gtp(struct net *net, struct flowi4 *fl4,
 	return ip_route_output_key(net, fl4);
 }
 
+static inline void
+gtp0_push_header(struct sk_buff *skb, struct pdp_ctx *pctx, int payload_len)
+{
+	struct gtp0_header *gtp0;
+
+	/* ensure there is sufficient headroom */
+	skb_cow(skb, sizeof(*gtp0) + IP_UDP_LEN);
+	gtp0 = (struct gtp0_header *) skb_push(skb, sizeof(*gtp0));
+
+	gtp0->flags = 0;
+	gtp0->type = GTP_TPDU;
+	gtp0->length = payload_len;
+	gtp0->seq = atomic_inc_return(&pctx->tx_seq) % 0xffff;
+	gtp0->flow = pctx->flow;
+	gtp0->number = 0xFF;
+	gtp0->spare[0] = gtp0->spare[1] = gtp0->spare[2] = 0;
+	gtp0->tid = pctx->tid;
+}
+
+static inline void
+gtp1u_push_header(struct sk_buff *skb, struct pdp_ctx *pctx, int payload_len)
+{
+	struct gtp1u_header *gtp1u;
+
+	/* ensure there is sufficient headroom */
+	skb_cow(skb, sizeof(*gtp1u) + IP_UDP_LEN);
+	gtp1u = (struct gtp1u_header *) skb_push(skb, sizeof(*gtp1u));
+
+	gtp1u->flags = (1 << 5) | 0x10; /* V1, GTP-non-prime */
+	gtp1u->type = GTP_TPDU;
+	gtp1u->length = payload_len;
+	gtp1u->tid = pctx->tid;
+}
+
 static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct gtp_instance *gti = netdev_priv(dev);
-	struct pdp_ctx *pctx;
+	struct pdp_ctx *pctx = NULL;
 	struct pcpu_tstats *tstats;
 	struct iphdr *old_iph, *iph;
 	struct udphdr *uh;
 	unsigned int payload_len;
-	int df, mtu;
+	int df, mtu, err;
 	struct rtable *rt = NULL;
 	struct flowi4 fl4;
 	struct net_device *tdev;
+	struct inet_sock *inet;
 
-	/* XXX */
-	return NETDEV_TX_OK;
+	/* UDP socket not initialized, skip */
+	if (!gti->sock0) {
+		pr_info("xmit: no socket / need cfg, skipping\n");
+		return NETDEV_TX_OK;
+	}
+
+	inet = inet_sk(gti->sock0->sk);
 
 	/* read the IP desination address and resolve the PDP context.
 	 * Prepend PDP header with TEI/TID from PDP ctx */
+	rcu_read_lock_bh();
 	if (skb->protocol == htons(ETH_P_IP)) {
 		struct iphdr *iph = ip_hdr(skb);
-		rcu_read_lock_bh();
 		pctx = ipv4_pdp_find(gti, iph->daddr);
 	} else if (skb->protocol == htons(ETH_P_IPV6)) {
 		struct ipv6hdr *iph6 = ipv6_hdr(skb);
-		rcu_read_lock_bh();
 		pctx = ipv6_pdp_find(gti, &iph6->daddr);
-	} else
+	}
+
+	if (!pctx) {
+		rcu_read_unlock_bh();
+		pr_info("no pdp ctx found, skipping\n");
 		return NETDEV_TX_OK;
+	}
+
+	pr_info("found pdp ctx %p\n", pctx);
+
+	/* Obtain route for the new encapsulated GTP packet */
+	rt = ip4_route_output_gtp(dev_net(dev), &fl4, pctx->sgsn_addr.ip4,
+				  inet->inet_saddr, 0,
+				  gti->real_dev->ifindex);
+	if (IS_ERR(rt)) {
+		pr_info("no rt found, skipping\n");
+		dev->stats.tx_carrier_errors++;
+		goto tx_error;
+	}
+	tdev = rt->dst.dev;
+
+	/* There is a routing loop */
+	if (tdev == dev) {
+		pr_info("rt loop, skipping\n");
+		ip_rt_put(rt);
+		dev->stats.collisions++;
+		goto tx_error;
+	}
 
 	/* FIXME: does this include IP+UDP but not Eth header? */
 	payload_len = skb->len;
 
-	if (pctx->gtp_version == 0) {
-		struct gtp0_header *gtp0;
-
-		/* ensure there is sufficient headroom */
-		skb_cow(skb, sizeof(*gtp0) + IP_UDP_LEN);
-		gtp0 = (struct gtp0_header *) skb_push(skb, sizeof(*gtp0));
-
-		gtp0->flags = 0;
-		gtp0->type = GTP_TPDU;
-		gtp0->length = payload_len;
-		gtp0->seq = atomic_inc_return(&pctx->tx_seq) % 0xffff;
-		gtp0->flow = pctx->flow;
-		gtp0->number = 0xFF;
-		gtp0->spare[0] = gtp0->spare[1] = gtp0->spare[2] = 0;
-		gtp0->tid = pctx->tid;
-
-	} else if (pctx->gtp_version == 1) {
-		struct gtp1u_header *gtp1u;
-
-		/* ensure there is sufficient headroom */
-		skb_cow(skb, sizeof(*gtp1u) + IP_UDP_LEN);
-		gtp1u = (struct gtp1u_header *) skb_push(skb, sizeof(*gtp1u));
-
-		gtp1u->flags = (1 << 5) | 0x10; /* V1, GTP-non-prime */
-		gtp1u->type = GTP_TPDU;
-		gtp1u->length = payload_len;
-		gtp1u->tid = pctx->tid;
-
-	} else {
-		rcu_read_unlock_bh();
-		return NETDEV_TX_OK;
+	/* Pushing GTP header */
+	pr_info("pushing gtp header\n");
+	switch (pctx->gtp_version) {
+	case GTP_V0:
+		gtp0_push_header(skb, pctx, payload_len);
+		break;
+	case GTP_V1:
+		gtp1u_push_header(skb, pctx, payload_len);
+		break;
+	default:
+		/* Should not happen */
+		goto out;
 	}
 
 	old_iph = ip_hdr(skb);
 
+	pr_info("pushing UDP/IP header\n");
 	/* new UDP and IP header in front of GTP header */
-
 	skb_push(skb, sizeof(struct udphdr));
 	skb_reset_transport_header(skb);
 	skb_push(skb, sizeof(struct iphdr));
@@ -491,31 +539,6 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 			      IPSKB_REROUTED);
 	skb_dst_drop(skb);
 	skb_dst_set(skb, &rt->dst);
-
-	/* XXX */
-	rt = ip4_route_output_gtp(dev_net(dev), &fl4,
-				  0, 0, 0, 0);
-	/*
-				  pctx->remote_u...,
-				  gtpi->gtp0_addr,
-				  old_iph->tos,
-				  FIXME_link);
-
-ip4_route_output_gtp(struct net *net, struct flowi4 *fl4,
-		     __be32 daddr, __be32 saddr, __u8 tos, int oif)
-	*/
-
-	if (IS_ERR(rt)) {
-		dev->stats.tx_carrier_errors++;
-		goto tx_error;
-	}
-	tdev = rt->dst.dev;
-
-	if (tdev == dev) {
-		ip_rt_put(rt);
-		dev->stats.collisions++;
-		goto tx_error;
-	}
 
 	df = old_iph->frag_off;
 	if (df)
@@ -554,24 +577,36 @@ ip4_route_output_gtp(struct net *net, struct flowi4 *fl4,
 	iph->saddr = fl4.saddr;
 	iph->ttl = ip4_dst_hoplimit(&rt->dst);
 
+	pr_info("gtp -> IP src: %pI4 dst: %pI4\n", &iph->saddr, &iph->daddr);
+
 	uh = udp_hdr(skb);
 	if (pctx->gtp_version == 0)
-		uh->source = uh->dest = GTP0_PORT;
+		uh->source = uh->dest = htons(GTP0_PORT);
 	else
-		uh->source = uh->dest = GTP1U_PORT;
+		uh->source = uh->dest = htons(GTP1U_PORT);
 
-	uh->len = sizeof(struct udphdr) + payload_len;
+	uh->len = htons(sizeof(struct udphdr) + payload_len);
+
+	pr_info("gtp -> UDP src: %u dst: %u (len %u)\n",
+		ntohs(uh->source), ntohs(uh->dest), ntohs(uh->len));
 
 	rcu_read_unlock_bh();
 
 	nf_reset(skb);
-	tstats = this_cpu_ptr(dev->tstats);
 	/* XXX update stats? */
-//	__IPTUNNEL_XMIT(tstats, &dev->stats);
+	tstats = this_cpu_ptr(dev->tstats);
+
+	err = ip_local_out(skb);
+	if (unlikely(net_xmit_eval(err)))
+		pr_info("error in ip_local_out\n");
 
 	return NETDEV_TX_OK;
-
+out:
+	rcu_read_unlock_bh();
+	return NETDEV_TX_OK;
 tx_error:
+	rcu_read_unlock_bh();
+	pr_info("no route to reach destination\n");
 	dev->stats.tx_errors++;
 	dev_kfree_skb(skb);
 	return NETDEV_TX_OK;
@@ -633,13 +668,13 @@ static int gtp_newlink(struct net *src_net, struct net_device *dev,
 	else if (dev->mtu > real_dev->mtu)
 		return -EINVAL;
 
+	gti = netdev_priv(dev);
+	gti->real_dev = real_dev;
+
 	err = register_netdevice(dev);
 	if (err < 0)
 		goto err1;
 
-	gti = netdev_priv(dev);
-	gti->dev = dev;
-	gti->real_dev = real_dev;
 	list_add_rcu(&gti->list, &gtp_instance_list);
 
 	pr_info("registered new %s interface\n", dev->name);
