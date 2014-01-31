@@ -15,7 +15,6 @@
 #include <linux/rculist.h>
 #include <linux/jhash.h>
 #include <linux/if_tunnel.h>
-#include <linux/etherdevice.h>
 
 #include <net/protocol.h>
 #include <net/ip.h>
@@ -388,9 +387,6 @@ static int gtp_dev_init(struct net_device *dev)
 
 	dev->flags              = IFF_NOARP;
 	gti->dev = dev;
-	eth_hw_addr_random(dev);
-
-	memset(&dev->broadcast[0], 0xff, 6);
 	dev->qdisc_tx_busylock = &gtp_eth_tx_busylock;
 
 	dev->tstats = alloc_percpu(struct pcpu_tstats);
@@ -509,7 +505,6 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 		goto tx_error;
 	}
 
-	/* FIXME: does this include IP+UDP but not Eth header? */
 	payload_len = skb->len;
 
 	/* Pushing GTP header */
@@ -619,27 +614,11 @@ static const struct net_device_ops gtp_netdev_ops = {
 
 static void gtp_link_setup(struct net_device *dev)
 {
-	ether_setup(dev);
-
 	dev->priv_flags		&= ~(IFF_TX_SKB_SHARING);
 	dev->tx_queue_len	= 0;
 
 	dev->netdev_ops		= &gtp_netdev_ops;
-	dev->destructor		= free_netdev,
-
-	memset(dev->broadcast, 0, ETH_ALEN);
-}
-
-static int gtp_link_validate(struct nlattr *tb[], struct nlattr *data[])
-{
-	if (tb[IFLA_ADDRESS]) {
-		if (nla_len(tb[IFLA_ADDRESS]) != ETH_ALEN)
-			return -EINVAL;
-		if (!is_valid_ether_addr(nla_data(tb[IFLA_ADDRESS])))
-			return -EADDRNOTAVAIL;
-	}
-
-	return 0;
+	dev->destructor		= free_netdev;
 }
 
 static int gtp_newlink(struct net *src_net, struct net_device *dev,
@@ -659,9 +638,6 @@ static int gtp_newlink(struct net *src_net, struct net_device *dev,
 		return -ENODEV;
 
 	dev_hold(real_dev);
-
-	if (real_dev->type == ARPHRD_ETHER && !tb[IFLA_ADDRESS])
-		eth_hw_addr_random(dev);
 
 	if (!tb[IFLA_MTU])
 		dev->mtu = real_dev->mtu;
@@ -698,7 +674,6 @@ static struct rtnl_link_ops gtp_link_ops __read_mostly = {
 	.kind		= "gtp",
 	.priv_size	= sizeof(struct gtp_instance),
 	.setup		= gtp_link_setup,
-	.validate	= gtp_link_validate,
 	.newlink	= gtp_newlink,
 	.dellink	= gtp_dellink,
 };
