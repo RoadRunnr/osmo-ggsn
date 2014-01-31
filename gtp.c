@@ -581,6 +581,7 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 		uh->source = uh->dest = htons(GTP1U_PORT);
 
 	uh->len = htons(sizeof(struct udphdr) + payload_len);
+	uh->check = 0;
 
 	pr_info("gtp -> UDP src: %u dst: %u (len %u)\n",
 		ntohs(uh->source), ntohs(uh->dest), ntohs(uh->len));
