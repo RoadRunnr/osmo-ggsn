@@ -424,14 +424,14 @@ gtp0_push_header(struct sk_buff *skb, struct pdp_ctx *pctx, int payload_len)
 	skb_cow(skb, sizeof(*gtp0) + IP_UDP_LEN);
 	gtp0 = (struct gtp0_header *) skb_push(skb, sizeof(*gtp0));
 
-	gtp0->flags = 0;
+	gtp0->flags = 0x1e; /* V0, GTP-non-prime */
 	gtp0->type = GTP_TPDU;
-	gtp0->length = payload_len;
-	gtp0->seq = atomic_inc_return(&pctx->tx_seq) % 0xffff;
-	gtp0->flow = pctx->flow;
+	gtp0->length = htons(payload_len);
+	gtp0->seq = htonl(atomic_inc_return(&pctx->tx_seq) % 0xffff);
+	gtp0->flow = htonl(pctx->flow);
 	gtp0->number = 0xFF;
 	gtp0->spare[0] = gtp0->spare[1] = gtp0->spare[2] = 0;
-	gtp0->tid = pctx->tid;
+	gtp0->tid = cpu_to_be64(pctx->tid);
 }
 
 static inline void
@@ -443,10 +443,10 @@ gtp1u_push_header(struct sk_buff *skb, struct pdp_ctx *pctx, int payload_len)
 	skb_cow(skb, sizeof(*gtp1u) + IP_UDP_LEN);
 	gtp1u = (struct gtp1u_header *) skb_push(skb, sizeof(*gtp1u));
 
-	gtp1u->flags = (1 << 5) | 0x10; /* V1, GTP-non-prime */
+	gtp1u->flags = 0x10; /* V1, GTP-non-prime */
 	gtp1u->type = GTP_TPDU;
-	gtp1u->length = payload_len;
-	gtp1u->tid = pctx->tid;
+	gtp1u->length = htons(payload_len);
+	gtp1u->tid = htonl((u32)pctx->tid);
 }
 
 static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
