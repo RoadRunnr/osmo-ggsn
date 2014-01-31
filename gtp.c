@@ -423,10 +423,10 @@ gtp0_push_header(struct sk_buff *skb, struct pdp_ctx *pctx, int payload_len)
 	gtp0->flags = 0x1e; /* V0, GTP-non-prime */
 	gtp0->type = GTP_TPDU;
 	gtp0->length = htons(payload_len);
-	gtp0->seq = htonl(atomic_inc_return(&pctx->tx_seq) % 0xffff);
+	gtp0->seq = htons(atomic_inc_return(&pctx->tx_seq) % 0xffff);
 	gtp0->flow = htonl(pctx->flow);
 	gtp0->number = 0xFF;
-	gtp0->spare[0] = gtp0->spare[1] = gtp0->spare[2] = 0;
+	gtp0->spare[0] = gtp0->spare[1] = gtp0->spare[2] = 0xFF;
 	gtp0->tid = cpu_to_be64(pctx->tid);
 }
 
