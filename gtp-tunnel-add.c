@@ -71,8 +71,8 @@ int main(int argc, char *argv[])
 		exit(EXIT_FAILURE);
 	}
 
-	nlh = build_msg(genl_id, buf, atoi(argv[2]), gtp_ifidx, ms.s_addr,
-			sgsn.s_addr);
+	nlh = build_msg(genl_id, buf, atoi(argv[2]), gtp_ifidx, sgsn.s_addr,
+			ms.s_addr);
 
 	if (genl_socket_talk(nl, nlh, seq, NULL, NULL) < 0)
 		perror("genl_socket_talk");
