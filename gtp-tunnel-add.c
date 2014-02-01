@@ -19,7 +19,7 @@ static struct nlmsghdr *build_msg(int type, char *buf, int i, uint32_t ifidx,
 {
 	struct nlmsghdr *nlh;
 
-	nlh = genl_nlmsg_build_hdr(buf, type, NLM_F_ACK, ++seq,
+	nlh = genl_nlmsg_build_hdr(buf, type, NLM_F_EXCL | NLM_F_ACK, ++seq,
 				   GTP_CMD_TUNNEL_NEW);
 
 	mnl_attr_put_u32(nlh, GTPA_VERSION, GTP_V0);

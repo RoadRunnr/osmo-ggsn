@@ -862,27 +862,62 @@ static int gtp_genl_cfg_delete(struct sk_buff *skb, struct genl_info *info)
 	return 0;
 }
 
-static int ipv4_pdp_add(struct gtp_instance *gti, uint32_t version,
-			uint32_t sgsn_addr, uint32_t ms_addr, uint64_t tid)
+static int ipv4_pdp_add(struct gtp_instance *gti, struct genl_info *info)
 {
-	uint32_t hash_ms = ipv4_hashfn(ms_addr) % gti->hash_size;
-	uint32_t hash_tid = ipv4_hashfn(tid) % gti->hash_size;
+	uint32_t hash_ms;
+	uint32_t hash_tid;
 	struct pdp_ctx *pctx;
+	u32 gtp_version, link, sgsn_addr, ms_addr, tid;
+	bool found = false;
+
+	gtp_version = nla_get_u32(info->attrs[GTPA_VERSION]);
+	link = nla_get_u32(info->attrs[GTPA_LINK]);
+	sgsn_addr = nla_get_u32(info->attrs[GTPA_SGSN_ADDRESS]);
+	ms_addr = nla_get_u32(info->attrs[GTPA_MS_ADDRESS]);
+	tid = nla_get_u64(info->attrs[GTPA_TID]);
+
+	hash_ms = ipv4_hashfn(ms_addr) % gti->hash_size;
+
+	hlist_for_each_entry_rcu(pctx, &gti->addr_hash[hash_ms], hlist_addr) {
+		if (pctx->ms_addr.ip4 == ms_addr) {
+			found = true;
+			break;
+		}
+	}
+
+	if (found) {
+		if (info->nlhdr->nlmsg_flags & NLM_F_EXCL)
+			return -EEXIST;
+		if (info->nlhdr->nlmsg_flags & NLM_F_REPLACE)
+			return -EOPNOTSUPP;
+
+		pctx->af = AF_INET;
+		pctx->gtp_version = gtp_version;
+		pctx->tid = tid;
+		pctx->sgsn_addr.ip4 = sgsn_addr;
+		pctx->ms_addr.ip4 = ms_addr;
+
+		pr_info("update tunnel id = %u (pdp %p)\n", tid, pctx);
+
+		return 0;
+	}
 
 	pctx = kmalloc(sizeof(struct pdp_ctx), GFP_KERNEL);
 	if (pctx == NULL)
 		return -ENOMEM;
 
 	pctx->af = AF_INET;
-	pctx->gtp_version = version;
+	pctx->gtp_version = gtp_version;
 	pctx->tid = tid;
 	pctx->sgsn_addr.ip4 = sgsn_addr;
 	pctx->ms_addr.ip4 = ms_addr;
 
-	pr_info("added pdp %p\n", pctx);
+	hash_tid = ipv4_hashfn(tid) % gti->hash_size;
 
 	hlist_add_head_rcu(&pctx->hlist_addr, &gti->addr_hash[hash_ms]);
 	hlist_add_head_rcu(&pctx->hlist_tid, &gti->tid_hash[hash_tid]);
+
+	pr_info("adding tunnel id = %u (pdp %p)\n", tid, pctx);
 
 	return 0;
 }
@@ -891,9 +926,6 @@ static int gtp_genl_tunnel_new(struct sk_buff *skb, struct genl_info *info)
 {
 	struct net_device *dev;
 	struct gtp_instance *gti;
-	u32 gtp_version, link, sgsn_addr, ms_addr, tid;
-
-	pr_info("adding new tunnel\n");
 
 	if (!info->attrs[GTPA_VERSION] ||
 	    !info->attrs[GTPA_LINK] ||
@@ -912,15 +944,7 @@ static int gtp_genl_tunnel_new(struct sk_buff *skb, struct genl_info *info)
 	if (!gti->socket_enabled)
 		return -ENETDOWN;
 
-	gtp_version = nla_get_u32(info->attrs[GTPA_VERSION]);
-	link = nla_get_u32(info->attrs[GTPA_LINK]);
-	sgsn_addr = nla_get_u32(info->attrs[GTPA_SGSN_ADDRESS]);
-	ms_addr = nla_get_u32(info->attrs[GTPA_MS_ADDRESS]);
-	tid = nla_get_u64(info->attrs[GTPA_TID]);
-
-	pr_info("  tunnel id = %u\n", tid);
-
-	return ipv4_pdp_add(gti, gtp_version, sgsn_addr, ms_addr, tid);
+	return ipv4_pdp_add(gti, info);
 }
 
 static int gtp_genl_tunnel_delete(struct sk_buff *skb, struct genl_info *info)
