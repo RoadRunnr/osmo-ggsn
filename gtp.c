@@ -242,20 +242,27 @@ static inline struct gtp_instance *sk_to_gti(struct sock *sk)
  * Return codes: 0: succes, <0: error, >0: passed up to userspace UDP */
 static int gtp0_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 {
-	struct gtp0_header *gtp0 = (struct gtp0_header *) skb_transport_header(skb);
+	struct gtp0_header *gtp0;
 	struct gtp_instance *gti;
 	struct pdp_ctx *pctx;
 	uint64_t tid;
 	int rc;
+
+	pr_info("gtp0 udp received\n");
 
 	/* resolve the GTP instance to which the socket belongs */
 	gti = sk_to_gti(sk);
 	if (!gti)
 		goto user;
 
+	/* UDP always verifies the packet length. */
+	__skb_pull(skb, sizeof(struct udphdr));
+
 	/* check for sufficient header size */
-	if (!pskb_may_pull(skb, sizeof(struct udphdr) + sizeof(*gtp0)))
+	if (!pskb_may_pull(skb, sizeof(*gtp0)))
 		goto drop_put;
+
+	gtp0 = (struct gtp0_header *)skb->data;
 
 	/* check for GTP Version 0 */
 	if ((gtp0->flags >> 5) != 0)
@@ -273,8 +280,13 @@ static int gtp0_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	if (!pctx)
 		goto drop_put_rcu;
 
-	/* get rid of the UDP and GTP header */
-	__skb_pull(skb, sizeof(struct udphdr) + sizeof(*gtp0));
+	/* get rid of the GTP header */
+	__skb_pull(skb, sizeof(*gtp0));
+
+	/* We're about to requeue the skb, so return resources
+	 * to its current owner (a socket receive buffer).
+	 */
+	skb_orphan(skb);
 
 	/* FIXME: check if the inner IP header has the source address
 	 * assigned to the current MS */
@@ -303,23 +315,30 @@ user:
  * Return codes: 0: succes, <0: error, >0: passed up to userspace UDP */
 static int gtp1u_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 {
-	struct gtp1_header_short *gtp1 =
-		(struct gtp1_header_short *) skb_transport_header(skb);
-	struct gtp0_header *gtp0 = (struct gtp0_header *) gtp1;
+	struct gtp1_header_short *gtp1;
+	struct gtp0_header *gtp0;
 	struct gtp_instance *gti;
 	struct pdp_ctx *pctx;
 	unsigned int min_len = sizeof(*gtp1);
 	uint64_t tid;
 	int rc;
 
+	pr_info("gtp1 udp received\n");
+
 	/* resolve the GTP instance to which the socket belongs */
 	gti = sk_to_gti(sk);
 	if (!gti)
 		goto user;
 
+	/* UDP always verifies the packet length. */
+	__skb_pull(skb, sizeof(struct udphdr));
+
 	/* check for sufficient header size */
-	if (!pskb_may_pull(skb, sizeof(struct udphdr) + sizeof(*gtp1)))
+	if (!pskb_may_pull(skb, sizeof(*gtp1)))
 		goto drop_put;
+
+	gtp1 = (struct gtp1_header_short *)skb->data;
+	gtp0 = (struct gtp0_header *)gtp1;
 
 	/* check for GTP Version 1 */
 	if ((gtp0->flags >> 5) != 1)
@@ -357,11 +376,16 @@ static int gtp1u_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	if (!pctx)
 		goto drop_put_rcu;
 
-	/* get rid of the UDP and GTP header */
-	__skb_pull(skb, sizeof(struct udphdr) + sizeof(*gtp1));
+	/* get rid of the GTP header */
+	__skb_pull(skb, sizeof(*gtp1));
 
 	/* FIXME: check if the inner IP header has the source address
 	 * assigned to the current MS */
+
+	/* We're about to requeue the skb, so return resources
+	 * to its current owner (a socket receive buffer).
+	 */
+	skb_orphan(skb);
 
 	/* re-submit via virtual tunnel device into regular network
 	 * stack */
@@ -731,6 +755,7 @@ static int gtp_create_bind_sock(struct gtp_instance *gti)
 	sk = gti->sock0->sk;
 	udp_sk(sk)->encap_type = UDP_ENCAP_GTP0;
 	udp_sk(sk)->encap_rcv = gtp0_udp_encap_recv;
+	sk->sk_user_data = gti;
 	udp_encap_enable();
 
 	/* Create and bind the socket for GTP1 user-plane */
@@ -748,6 +773,7 @@ static int gtp_create_bind_sock(struct gtp_instance *gti)
 	sk = gti->sock1u->sk;
 	udp_sk(sk)->encap_type = UDP_ENCAP_GTP1U;
 	udp_sk(sk)->encap_rcv = gtp1u_udp_encap_recv;
+	sk->sk_user_data = gti;
 
 	return 0;
 
