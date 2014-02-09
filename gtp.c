@@ -246,7 +246,6 @@ static int gtp0_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	struct gtp_instance *gti;
 	struct pdp_ctx *pctx;
 	uint64_t tid;
-	int rc;
 
 	pr_info("gtp0 udp received\n");
 
@@ -299,7 +298,12 @@ static int gtp0_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	skb_dst_drop(skb);
 	nf_reset(skb);
 
-	rc = dev_forward_skb(gti->real_dev, skb);
+	skb->dev = gti->dev;
+
+	/* Force the upper layers to verify it. */
+	skb->ip_summed = CHECKSUM_NONE;
+
+	netif_rx(skb);
 
 drop_put_rcu:
 	rcu_read_unlock_bh();
@@ -323,7 +327,6 @@ static int gtp1u_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	struct pdp_ctx *pctx;
 	unsigned int min_len = sizeof(*gtp1);
 	uint64_t tid;
-	int rc;
 
 	pr_info("gtp1 udp received\n");
 
@@ -397,7 +400,12 @@ static int gtp1u_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	skb_dst_drop(skb);
 	nf_reset(skb);
 
-	rc = dev_forward_skb(gti->real_dev, skb);
+	skb->dev = gti->dev;
+
+	/* Force the upper layers to verify it. */
+	skb->ip_summed = CHECKSUM_NONE;
+
+	netif_rx(skb);
 
 drop_put_rcu:
 	rcu_read_unlock_bh();
