@@ -27,7 +27,7 @@
 #include "gtp.h"
 #include "gtp_nl.h"
 
-static uint32_t gtp_h_initval;
+static u32 gtp_h_initval;
 
 struct gsn {
 	struct list_head list;
@@ -37,24 +37,24 @@ struct pdp_ctx {
 	struct hlist_node hlist_tid;
 	struct hlist_node hlist_addr;
 
-	uint64_t tid;
-	uint8_t gtp_version;
-	unsigned short int af;
+	u64 tid;
+	u8 gtp_version;
+	u16 af;
 
 	union {
 		struct in6_addr ip6;
-		uint32_t ip4;
+		struct in_addr ip4;
 	} ms_addr;
 
 	union {
 		struct in6_addr ip6;
-		uint32_t ip4;
+		struct in_addr ip4;
 	} sgsn_addr;
 
 	/* user plane and control plane address of remote GSN */
 	struct sockaddr remote_c;
 	struct sockaddr remote_u;
-	uint16_t flow;
+	u16 flow;
 	atomic_t tx_seq;
 
 	struct rcu_head rcu_head;
@@ -84,30 +84,30 @@ struct gtp_instance {
 
 static LIST_HEAD(gtp_instance_list); /* XXX netns */
 
-static inline uint32_t gtp0_hashfn(uint64_t tid)
+static inline u32 gtp0_hashfn(u64 tid)
 {
-	uint32_t *tid32 = (uint32_t *) &tid;
+	u32 *tid32 = (u32 *) &tid;
 	return jhash_2words(tid32[0], tid32[1], gtp_h_initval);
 }
 
-static inline uint32_t gtp1u_hashfn(uint32_t tid)
+static inline u32 gtp1u_hashfn(u32 tid)
 {
 	return jhash_1word(tid, gtp_h_initval);
 }
 
-static inline uint32_t ipv4_hashfn(uint32_t ip)
+static inline u32 ipv4_hashfn(u32 ip)
 {
 	return jhash_1word(ip, gtp_h_initval);
 }
 
-static inline uint32_t ipv6_hashfn(struct in6_addr *ip6)
+static inline u32 ipv6_hashfn(struct in6_addr *ip6)
 {
 	return jhash2((const u32 *) &ip6->s6_addr32, sizeof(*ip6)/4, gtp_h_initval);
 }
 
 
 /* resolve a PDP context structure based on the 64bit TID */
-static struct pdp_ctx *gtp0_pdp_find(struct gtp_instance *gti, uint64_t tid)
+static struct pdp_ctx *gtp0_pdp_find(struct gtp_instance *gti, u64 tid)
 {
 	struct hlist_head *head;
 	struct pdp_ctx *pdp;
@@ -123,7 +123,7 @@ static struct pdp_ctx *gtp0_pdp_find(struct gtp_instance *gti, uint64_t tid)
 }
 
 /* resolve a PDP context structure based on the 32bit TEI */
-static struct pdp_ctx *gtp1_pdp_find(struct gtp_instance *gti, uint32_t tid)
+static struct pdp_ctx *gtp1_pdp_find(struct gtp_instance *gti, u32 tid)
 {
 	struct hlist_head *head;
 	struct pdp_ctx *pdp;
@@ -140,7 +140,7 @@ static struct pdp_ctx *gtp1_pdp_find(struct gtp_instance *gti, uint32_t tid)
 
 /* resolve a PDP context based on IPv4 address of MS */
 static struct pdp_ctx *ipv4_pdp_find(struct gtp_instance *gti,
-				     uint32_t ms_addr)
+				     u32 ms_addr)
 {
 	struct hlist_head *head;
 	struct pdp_ctx *pdp;
@@ -150,7 +150,7 @@ static struct pdp_ctx *ipv4_pdp_find(struct gtp_instance *gti,
 	hlist_for_each_entry_rcu(pdp, head, hlist_addr) {
 		pr_info("af %u : pdp->ms %pI4 == ms %pI4\n",
 			pdp->af, &pdp->ms_addr.ip4, &ms_addr);
-		if (pdp->af == AF_INET && pdp->ms_addr.ip4 == ms_addr)
+		if (pdp->af == AF_INET && pdp->ms_addr.ip4.s_addr == ms_addr)
 			return pdp;
 	}
 
@@ -201,7 +201,7 @@ static int gtp0_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	struct gtp0_header *gtp0;
 	struct gtp_instance *gti;
 	struct pdp_ctx *pctx;
-	uint64_t tid;
+	u64 tid;
 
 	pr_info("gtp0 udp received\n");
 
@@ -283,7 +283,7 @@ static int gtp1u_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	struct gtp_instance *gti;
 	struct pdp_ctx *pctx;
 	unsigned int min_len = sizeof(*gtp1);
-	uint64_t tid;
+	u64 tid;
 
 	pr_info("gtp1 udp received\n");
 
@@ -503,7 +503,8 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	pr_info("found pdp ctx %p\n", pctx);
 
 	/* Obtain route for the new encapsulated GTP packet */
-	rt = ip4_route_output_gtp(dev_net(dev), &fl4, pctx->sgsn_addr.ip4,
+	rt = ip4_route_output_gtp(dev_net(dev), &fl4,
+				  pctx->sgsn_addr.ip4.s_addr,
 				  inet->inet_saddr, 0,
 				  gti->real_dev->ifindex);
 	if (IS_ERR(rt)) {
@@ -885,8 +886,8 @@ static int gtp_genl_cfg_delete(struct sk_buff *skb, struct genl_info *info)
 
 static int ipv4_pdp_add(struct gtp_instance *gti, struct genl_info *info)
 {
-	uint32_t hash_ms;
-	uint32_t hash_tid;
+	u32 hash_ms;
+	u32 hash_tid;
 	struct pdp_ctx *pctx;
 	u32 gtp_version, link, sgsn_addr, ms_addr, tid;
 	bool found = false;
@@ -912,7 +913,7 @@ static int ipv4_pdp_add(struct gtp_instance *gti, struct genl_info *info)
 	hash_ms = ipv4_hashfn(ms_addr) % gti->hash_size;
 
 	hlist_for_each_entry_rcu(pctx, &gti->addr_hash[hash_ms], hlist_addr) {
-		if (pctx->ms_addr.ip4 == ms_addr) {
+		if (pctx->ms_addr.ip4.s_addr == ms_addr) {
 			found = true;
 			break;
 		}
@@ -927,8 +928,8 @@ static int ipv4_pdp_add(struct gtp_instance *gti, struct genl_info *info)
 		pctx->af = AF_INET;
 		pctx->gtp_version = gtp_version;
 		pctx->tid = tid;
-		pctx->sgsn_addr.ip4 = sgsn_addr;
-		pctx->ms_addr.ip4 = ms_addr;
+		pctx->sgsn_addr.ip4.s_addr = sgsn_addr;
+		pctx->ms_addr.ip4.s_addr = ms_addr;
 
 		pr_info("update tunnel id = %u (pdp %p)\n", tid, pctx);
 
@@ -942,8 +943,8 @@ static int ipv4_pdp_add(struct gtp_instance *gti, struct genl_info *info)
 	pctx->af = AF_INET;
 	pctx->gtp_version = gtp_version;
 	pctx->tid = tid;
-	pctx->sgsn_addr.ip4 = sgsn_addr;
-	pctx->ms_addr.ip4 = ms_addr;
+	pctx->sgsn_addr.ip4.s_addr = sgsn_addr;
+	pctx->ms_addr.ip4.s_addr = ms_addr;
 
 	hash_tid = ipv4_hashfn(tid) % gti->hash_size;
 
@@ -1075,8 +1076,8 @@ static struct genl_family gtp_genl_family = {
 };
 
 static int
-gtp_genl_fill_info(struct sk_buff *skb, uint32_t snd_portid, uint32_t snd_seq,
-		   uint32_t type, struct pdp_ctx *pctx)
+gtp_genl_fill_info(struct sk_buff *skb, u32 snd_portid, u32 snd_seq,
+		   u32 type, struct pdp_ctx *pctx)
 {
 	void *genlh;
 
@@ -1088,8 +1089,8 @@ gtp_genl_fill_info(struct sk_buff *skb, uint32_t snd_portid, uint32_t snd_seq,
 	pr_info("filling info for tunnel %llu\n", pctx->tid);
 
 	if (nla_put_u32(skb, GTPA_VERSION, pctx->gtp_version) ||
-	    nla_put_u32(skb, GTPA_SGSN_ADDRESS, pctx->sgsn_addr.ip4) ||
-	    nla_put_u32(skb, GTPA_MS_ADDRESS, pctx->ms_addr.ip4) ||
+	    nla_put_u32(skb, GTPA_SGSN_ADDRESS, pctx->sgsn_addr.ip4.s_addr) ||
+	    nla_put_u32(skb, GTPA_MS_ADDRESS, pctx->ms_addr.ip4.s_addr) ||
 	    nla_put_u64(skb, GTPA_TID, pctx->tid))
 		goto nla_put_failure;
 
