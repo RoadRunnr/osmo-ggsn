@@ -507,6 +507,7 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	struct gtp_instance *gti = netdev_priv(dev);
 	struct pdp_ctx *pctx = NULL;
 	struct iphdr *old_iph, *iph;
+	struct ipv6hdr *old_iph6;
 	struct udphdr *uh;
 	unsigned int payload_len;
 	int df, mtu, err;
@@ -527,11 +528,11 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	 * Prepend PDP header with TEI/TID from PDP ctx */
 	rcu_read_lock_bh();
 	if (skb->protocol == htons(ETH_P_IP)) {
-		struct iphdr *iph = ip_hdr(skb);
-		pctx = ipv4_pdp_find(gti, iph->daddr);
+		old_iph = ip_hdr(skb);
+		pctx = ipv4_pdp_find(gti, old_iph->daddr);
 	} else if (skb->protocol == htons(ETH_P_IPV6)) {
-		struct ipv6hdr *iph6 = ipv6_hdr(skb);
-		pctx = ipv6_pdp_find(gti, &iph6->daddr);
+		old_iph6 = ipv6_hdr(skb);
+		pctx = ipv6_pdp_find(gti, &old_iph6->daddr);
 	}
 
 	if (!pctx) {
