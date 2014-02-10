@@ -1,39 +1,44 @@
-#ifndef _UAPI_LINUX_GTP_H_
+#ifndef _GTP_H_
+#define _GTP_H
 
-enum gtp_genl_cmds {
-	GTP_CMD_CFG_NEW,
-	GTP_CMD_CFG_DELETE,
-	GTP_CMD_CFG_GET,
-	GTP_CMD_TUNNEL_NEW,
-	GTP_CMD_TUNNEL_DELETE,
-	GTP_CMD_TUNNEL_GET,
+/* Resides in include/uapi/linux/udp.h */
+#ifndef UDP_ENCAP_GTP0
+#define UDP_ENCAP_GTP0	4
+#endif
 
-	GTP_CMD_TUNNEL_MAX,
-};
+#ifndef UDP_ENCAP_GTP1U
+#define UDP_ENCAP_GTP1U	5
+#endif
 
-enum gtp_version {
-	GTP_V0 = 0,
-	GTP_V1,
-};
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 13, 0)
+#define pcpu_sw_netstats pcpu_tstats
+#endif
 
-enum gtp_cfg_attrs {
-	GTPA_CFG_UNSPEC = 0,
-	GTPA_CFG_LINK,
-	GTPA_CFG_LOCAL_ADDR_IPV4,
-	GTPA_CFG_HSIZE,
-	__GTPA_CFG_MAX,
-};
-#define GTPA_CFG_MAX (__GTPA_CFG_MAX + 1)
+/* general GTP protocol related definitions */
 
-enum gtp_attrs {
-	GTPA_UNSPEC = 0,
-	GTPA_LINK,
-	GTPA_VERSION,
-	GTPA_TID,	/* 64 bits for GTPv1 */
-	GTPA_SGSN_ADDRESS,
-	GTPA_MS_ADDRESS,
-	__GTPA_MAX,
-};
-#define GTPA_MAX (__GTPA_MAX + 1)
+#define GTP0_PORT	3386
+#define GTP1U_PORT	2152
 
-#endif /* _UAPI_LINUX_GTP_H_ */
+#define GTP_TPDU	255
+
+struct gtp0_header {	/* According to GSM TS 09.60 */
+	uint8_t flags;
+	uint8_t type;
+	uint16_t length;
+	uint16_t seq;
+	uint16_t flow;
+	uint8_t number;
+	uint8_t spare[3];
+	uint64_t tid;
+} __attribute__ ((packed));
+
+struct gtp1_header_short { /* According to 3GPP TS 29.060 */
+	uint8_t flags;
+	uint8_t type;
+	uint16_t length;
+	uint32_t tid;
+} __attribute__ ((packed));
+
+#define gtp1u_header gtp1_header_short /* XXX */
+
+#endif

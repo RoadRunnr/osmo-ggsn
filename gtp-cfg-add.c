@@ -6,7 +6,7 @@
 #include <libmnl/libmnl.h>
 #include <linux/genetlink.h>
 
-#include "gtp.h"
+#include "gtp_nl.h"
 #include "genl.h"
 
 static uint32_t seq;

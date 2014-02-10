@@ -1,6 +1,6 @@
 #include <stdint.h>
 #include <libmnl/libmnl.h>
-#include "gtp.h"
+#include "gtp_nl.h"
 
 void gtp_build_payload(struct nlmsghdr *nlh, uint64_t tid, uint32_t ifidx,
 		       uint32_t sgsn_addr, uint32_t ms_addr, uint32_t version)
