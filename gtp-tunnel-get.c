@@ -13,6 +13,7 @@
 #include "genl.h"
 
 struct gtp_pdp {
+	uint32_t	version;
 	uint64_t	tid;
 	struct in_addr	sgsn_addr;
 	struct in_addr	ms_addr;
@@ -37,6 +38,7 @@ static int genl_gtp_validate_cb(const struct nlattr *attr, void *data)
 		break;
 	case GTPA_SGSN_ADDRESS:
 	case GTPA_MS_ADDRESS:
+	case GTPA_VERSION:
 		if (mnl_attr_validate(attr, MNL_TYPE_U32) < 0) {
 			perror("mnl_attr_validate");
 			return MNL_CB_ERROR;
@@ -65,7 +67,11 @@ static int genl_gtp_attr_cb(const struct nlmsghdr *nlh, void *data)
 	if (tb[GTPA_MS_ADDRESS]) {
 		pdp->ms_addr.s_addr = mnl_attr_get_u32(tb[GTPA_MS_ADDRESS]);
 	}
+	if (tb[GTPA_VERSION]) {
+		pdp->version = mnl_attr_get_u32(tb[GTPA_VERSION]);
+	}
 
+	printf("version %u ", pdp->version);
 	printf("tid %llu ms_addr %s ", pdp->tid, inet_ntoa(pdp->sgsn_addr));
 	printf("sgsn_addr %s\n", inet_ntoa(pdp->ms_addr));
 
