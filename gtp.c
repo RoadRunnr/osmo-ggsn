@@ -577,20 +577,13 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 		goto out;
 	}
 
-	old_iph = ip_hdr(skb);
-
-	pr_info("pushing UDP/IP header\n");
-	/* new UDP and IP header in front of GTP header */
-	skb_push(skb, sizeof(struct udphdr));
-	skb_reset_transport_header(skb);
-	skb_push(skb, sizeof(struct iphdr));
-	skb_reset_network_header(skb);
 	memset(&(IPCB(skb)->opt), 0, sizeof(IPCB(skb)->opt));
 	IPCB(skb)->flags &= ~(IPSKB_XFRM_TUNNEL_SIZE | IPSKB_XFRM_TRANSFORMED |
 			      IPSKB_REROUTED);
 	skb_dst_drop(skb);
 	skb_dst_set(skb, &rt->dst);
 
+	old_iph = ip_hdr(skb);
 	df = old_iph->frag_off;
 	if (df)
 		// XXX: tunnel->hlen: it depends on GTP0 / GTP1
@@ -618,17 +611,9 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	}
 #endif
 
-	iph = ip_hdr(skb);
-	iph->version = 4;
-	iph->ihl = sizeof(struct iphdr) >> 2;
-	iph->frag_off = old_iph->frag_off;
-	iph->protocol = IPPROTO_UDP;
-	iph->tos = old_iph->tos;
-	iph->daddr = fl4.daddr;
-	iph->saddr = fl4.saddr;
-	iph->ttl = ip4_dst_hoplimit(&rt->dst);
-
-	pr_info("gtp -> IP src: %pI4 dst: %pI4\n", &iph->saddr, &iph->daddr);
+	/* Push down and install the UDP header. */
+	skb_push(skb, sizeof(struct udphdr));
+	skb_reset_transport_header(skb);
 
 	uh = udp_hdr(skb);
 	if (pctx->gtp_version == 0)
@@ -641,6 +626,23 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	pr_info("gtp -> UDP src: %u dst: %u (len %u)\n",
 		ntohs(uh->source), ntohs(uh->dest), ntohs(uh->len));
+
+	/* Push down and install the IP header. Similar to iptunnel_xmit() */
+	skb_push(skb, sizeof(struct iphdr));
+	skb_reset_network_header(skb);
+
+	iph = ip_hdr(skb);
+
+	iph->version	=	4;
+	iph->ihl	=	sizeof(struct iphdr) >> 2;
+	iph->frag_off	=	old_iph->frag_off;
+	iph->protocol	=	IPPROTO_UDP;
+	iph->tos	=	old_iph->tos;
+	iph->daddr	=	fl4.daddr;
+	iph->saddr	=	fl4.saddr;
+	iph->ttl	=	ip4_dst_hoplimit(&rt->dst);
+
+	pr_info("gtp -> IP src: %pI4 dst: %pI4\n", &iph->saddr, &iph->daddr);
 
 	rcu_read_unlock_bh();
 
