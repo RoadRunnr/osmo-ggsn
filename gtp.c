@@ -29,10 +29,6 @@
 
 static u32 gtp_h_initval;
 
-struct gsn {
-	struct list_head list;
-};
-
 struct pdp_ctx {
 	struct hlist_node hlist_tid;
 	struct hlist_node hlist_addr;
