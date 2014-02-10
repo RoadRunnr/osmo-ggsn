@@ -10,6 +10,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/version.h>
 #include <linux/skbuff.h>
 #include <linux/udp.h>
 #include <linux/rculist.h>
@@ -34,13 +35,9 @@
 #define UDP_ENCAP_GTP1U		5
 #endif
 
-struct pcpu_tstats {
-	u64	rx_packets;
-	u64	rx_bytes;
-	u64	tx_packets;
-	u64	tx_bytes;
-	struct u64_stats_sync	syncp;
-};
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 13, 0)
+#define pcpu_sw_netstats pcpu_tstats
+#endif
 
 /* general GTP protocol related definitions */
 
@@ -429,7 +426,7 @@ static int gtp_dev_init(struct net_device *dev)
 	gti->dev = dev;
 	dev->qdisc_tx_busylock = &gtp_eth_tx_busylock;
 
-	dev->tstats = alloc_percpu(struct pcpu_tstats);
+	dev->tstats = alloc_percpu(struct pcpu_sw_netstats);
 	if (!dev->tstats)
 		return -ENOMEM;
 
@@ -485,11 +482,30 @@ gtp1u_push_header(struct sk_buff *skb, struct pdp_ctx *pctx, int payload_len)
 	gtp1u->tid = htonl((u32)pctx->tid);
 }
 
+/* From Linux kernel 3.13: iptunnel_xmit_stats() */
+static inline void
+gtp_iptunnel_xmit_stats(int err, struct net_device_stats *err_stats,
+			struct pcpu_sw_netstats __percpu *stats)
+{
+	if (err > 0) {
+		struct pcpu_sw_netstats *tstats = this_cpu_ptr(stats);
+
+		u64_stats_update_begin(&tstats->syncp);
+		tstats->tx_bytes += err;
+		tstats->tx_packets++;
+		u64_stats_update_end(&tstats->syncp);
+	} else if (err < 0) {
+		err_stats->tx_errors++;
+		err_stats->tx_aborted_errors++;
+	} else {
+		err_stats->tx_dropped++;
+	}
+}
+
 static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct gtp_instance *gti = netdev_priv(dev);
 	struct pdp_ctx *pctx = NULL;
-	struct pcpu_tstats *tstats;
 	struct iphdr *old_iph, *iph;
 	struct udphdr *uh;
 	unsigned int payload_len;
@@ -629,12 +645,9 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	rcu_read_unlock_bh();
 
 	nf_reset(skb);
-	/* XXX update stats? */
-	tstats = this_cpu_ptr(dev->tstats);
 
 	err = ip_local_out(skb);
-	if (unlikely(net_xmit_eval(err)))
-		pr_info("error in ip_local_out\n");
+	gtp_iptunnel_xmit_stats(err, &dev->stats, dev->tstats);
 
 	return NETDEV_TX_OK;
 out:
