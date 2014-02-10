@@ -1130,7 +1130,7 @@ gtp_genl_fill_info(struct sk_buff *skb, uint32_t snd_portid, uint32_t snd_seq,
 
 	pr_info("filling info for tunnel %llu\n", pctx->tid);
 
-	if (nla_put_u32(skb, GTPA_VERSION, pctx->tid) ||
+	if (nla_put_u32(skb, GTPA_VERSION, pctx->gtp_version) ||
 	    nla_put_u32(skb, GTPA_SGSN_ADDRESS, pctx->sgsn_addr.ip4) ||
 	    nla_put_u32(skb, GTPA_MS_ADDRESS, pctx->ms_addr.ip4) ||
 	    nla_put_u64(skb, GTPA_TID, pctx->tid))
