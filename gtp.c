@@ -80,7 +80,6 @@ struct gtp_instance {
 	struct net_device *dev;
 	struct net_device *real_dev;
 
-	/* FIXME: hash / tree of pdp contexts */
 	unsigned int hash_size;
 	struct hlist_head *tid_hash;
 	struct hlist_head *addr_hash;
