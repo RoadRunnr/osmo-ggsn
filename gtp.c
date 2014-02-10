@@ -923,6 +923,14 @@ static int ipv4_pdp_add(struct gtp_instance *gti, struct genl_info *info)
 	bool found = false;
 
 	gtp_version = nla_get_u32(info->attrs[GTPA_VERSION]);
+	switch (gtp_version) {
+	case GTP_V0:
+	case GTP_V1:
+		break;
+	default:
+		return -EINVAL;
+	}
+
 	link = nla_get_u32(info->attrs[GTPA_LINK]);
 	sgsn_addr = nla_get_u32(info->attrs[GTPA_SGSN_ADDRESS]);
 	ms_addr = nla_get_u32(info->attrs[GTPA_MS_ADDRESS]);
