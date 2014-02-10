@@ -27,9 +27,6 @@
 #include "gtp.h"
 #include "gtp_nl.h"
 
-/* implementation-specific definitions */
-
-/* FIXME: initialize this !! */
 static uint32_t gtp_h_initval;
 
 struct gsn {
@@ -1195,6 +1192,8 @@ static const struct genl_ops gtp_genl_ops[] = {
 static int __init gtp_init(void)
 {
 	int err;
+
+	get_random_bytes(&gtp_h_initval, sizeof(gtp_h_initval));
 
 	err = genl_register_family_with_ops(&gtp_genl_family, gtp_genl_ops);
 	if (err < 0)
