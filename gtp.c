@@ -98,6 +98,8 @@ struct pdp_ctx {
 	struct sockaddr remote_u;
 	uint16_t flow;
 	atomic_t tx_seq;
+
+	struct rcu_head rcu_head;
 };
 
 /* One local instance of the GTP code base */
@@ -1015,6 +1017,9 @@ static int gtp_genl_tunnel_delete(struct sk_buff *skb, struct genl_info *info)
 {
 	struct gtp_instance *gti;
 	struct net_device *dev;
+	struct pdp_ctx *pctx;
+	u32 gtp_version;
+	u64 tid;
 
 	pr_info("deleting tunnel\n");
 
@@ -1025,6 +1030,20 @@ static int gtp_genl_tunnel_delete(struct sk_buff *skb, struct genl_info *info)
 	    !info->attrs[GTPA_TID])
 		return -EINVAL;
 
+	gtp_version = nla_get_u32(info->attrs[GTPA_VERSION]);
+	switch (gtp_version) {
+	case GTP_V0:
+	case GTP_V1:
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	tid = nla_get_u64(info->attrs[GTPA_TID]);
+	/* GTPv1 allows 32-bits tunnel IDs */
+	if (gtp_version == GTP_V1 && tid > UINT_MAX)
+		return -EINVAL;
+
 	/* Check if there's an existing gtpX device to configure */
 	dev = gtp_find_dev(nla_get_u32(info->attrs[GTPA_LINK]));
 	if (dev == NULL)
@@ -1032,7 +1051,21 @@ static int gtp_genl_tunnel_delete(struct sk_buff *skb, struct genl_info *info)
 
 	gti = netdev_priv(dev);
 
-	/* XXX not yet implemented */
+	switch (gtp_version) {
+	case GTP_V0:
+		pctx = gtp0_pdp_find(gti, nla_get_u64(info->attrs[GTPA_TID]));
+		break;
+	case GTP_V1:
+		pctx = gtp1_pdp_find(gti, nla_get_u64(info->attrs[GTPA_TID]));
+		break;
+	}
+
+	if (pctx == NULL)
+		return -ENOENT;
+
+	hlist_del_rcu(&pctx->hlist_tid);
+	hlist_del_rcu(&pctx->hlist_addr);
+	kfree_rcu(pctx, rcu_head);
 
 	return 0;
 }
