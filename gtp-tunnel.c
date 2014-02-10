@@ -66,8 +66,8 @@ del_tunnel(int argc, char *argv[], int genl_id, struct mnl_socket *nl)
 
 	gtp_ifidx = if_nametoindex(argv[2]);
 
-	nlh = genl_nlmsg_build_hdr(buf, genl_id, NLM_F_EXCL | NLM_F_ACK, ++seq,
-				   GTP_CMD_TUNNEL_NEW);
+	nlh = genl_nlmsg_build_hdr(buf, genl_id, NLM_F_ACK, ++seq,
+				   GTP_CMD_TUNNEL_DELETE);
 	gtp_build_payload(nlh, atoi(argv[4]), gtp_ifidx, 0, 0, atoi(argv[3]));
 
 	if (genl_socket_talk(nl, nlh, seq, NULL, NULL) < 0)
