@@ -98,12 +98,8 @@ int genl_socket_talk(struct mnl_socket *nl, struct nlmsghdr *nlh, uint32_t seq,
 			break;
 		ret = mnl_socket_recvfrom(nl, buf, sizeof(buf));
 	}
-	if (ret == -1) {
-		perror("error");
-		return -1;
-	}
 
-	return 0;
+	return ret;
 }
 
 static struct nlmsghdr *
