@@ -757,7 +757,17 @@ err1:
 
 static void gtp_hashtable_free(struct gtp_instance *gti)
 {
-	/* XXX release tunnels in the hashes*/
+	struct pdp_ctx *pctx;
+	int i;
+
+	for (i = 0; i < gti->hash_size; i++) {
+		hlist_for_each_entry_rcu(pctx, &gti->tid_hash[i], hlist_tid) {
+			hlist_del_rcu(&pctx->hlist_tid);
+			hlist_del_rcu(&pctx->hlist_addr);
+			kfree_rcu(pctx, rcu_head);
+		}
+	}
+	synchronize_rcu();
 	kfree(gti->addr_hash);
 	kfree(gti->tid_hash);
 }
