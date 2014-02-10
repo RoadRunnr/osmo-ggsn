@@ -931,10 +931,14 @@ static int ipv4_pdp_add(struct gtp_instance *gti, struct genl_info *info)
 		return -EINVAL;
 	}
 
+	tid = nla_get_u64(info->attrs[GTPA_TID]);
+	/* GTPv1 allows 32-bits tunnel IDs */
+	if (gtp_version == GTP_V1 && tid > UINT_MAX)
+		return -EINVAL;
+
 	link = nla_get_u32(info->attrs[GTPA_LINK]);
 	sgsn_addr = nla_get_u32(info->attrs[GTPA_SGSN_ADDRESS]);
 	ms_addr = nla_get_u32(info->attrs[GTPA_MS_ADDRESS]);
-	tid = nla_get_u64(info->attrs[GTPA_TID]);
 
 	hash_ms = ipv4_hashfn(ms_addr) % gti->hash_size;
 
