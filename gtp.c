@@ -236,11 +236,6 @@ static int gtp0_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 
 	skb_reset_network_header(skb);
 
-	/* We're about to requeue the skb, so return resources
-	 * to its current owner (a socket receive buffer).
-	 */
-	skb_orphan(skb);
-
 	/* FIXME: check if the inner IP header has the source address
 	 * assigned to the current MS */
 
@@ -341,11 +336,6 @@ static int gtp1u_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 
 	/* FIXME: check if the inner IP header has the source address
 	 * assigned to the current MS */
-
-	/* We're about to requeue the skb, so return resources
-	 * to its current owner (a socket receive buffer).
-	 */
-	skb_orphan(skb);
 
 	/* re-submit via virtual tunnel device into regular network
 	 * stack */
