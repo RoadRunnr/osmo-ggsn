@@ -259,13 +259,13 @@ static int gtp0_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 
 	/* check for sufficient header size */
 	if (!pskb_may_pull(skb, sizeof(*gtp0)))
-		goto drop_put;
+		goto user_put;
 
 	gtp0 = (struct gtp0_header *)skb->data;
 
 	/* check for GTP Version 0 */
 	if ((gtp0->flags >> 5) != 0)
-		goto drop_put;
+		goto user_put;
 
 	/* check if it is T-PDU. if not -> userspace */
 	if (gtp0->type != GTP_TPDU)
@@ -277,7 +277,7 @@ static int gtp0_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	rcu_read_lock_bh();
 	pctx = gtp0_pdp_find(gti, tid);
 	if (!pctx)
-		goto drop_put_rcu;
+		goto user_put_rcu;
 
 	/* get rid of the GTP header */
 	__skb_pull(skb, sizeof(*gtp0));
@@ -305,12 +305,13 @@ static int gtp0_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 
 	netif_rx(skb);
 
-drop_put_rcu:
 	rcu_read_unlock_bh();
-drop_put:
 	sock_put(sk);
+
 	return 0;
 
+user_put_rcu:
+	rcu_read_unlock_bh();
 user_put:
 	sock_put(sk);
 user:
@@ -340,14 +341,14 @@ static int gtp1u_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 
 	/* check for sufficient header size */
 	if (!pskb_may_pull(skb, sizeof(*gtp1)))
-		goto drop_put;
+		goto user_put;
 
 	gtp1 = (struct gtp1_header_short *)skb->data;
 	gtp0 = (struct gtp0_header *)gtp1;
 
 	/* check for GTP Version 1 */
 	if ((gtp0->flags >> 5) != 1)
-		goto drop_put;
+		goto user_put;
 
 	/* FIXME: a look-up table might be faster than computing the
 	 * length iteratively */
@@ -366,11 +367,11 @@ static int gtp1u_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 
 	/* check if it is T-PDU. */
 	if (gtp0->type != GTP_TPDU)
-		goto drop_put;
+		goto user_put;
 
 	/* check for sufficient header size */
 	if (!pskb_may_pull(skb, sizeof(struct udphdr) + min_len))
-		goto drop_put;
+		goto user_put;
 
 	/* FIXME: actually take care of extension header chain */
 
@@ -379,7 +380,7 @@ static int gtp1u_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	rcu_read_lock_bh();
 	pctx = gtp1_pdp_find(gti, tid);
 	if (!pctx)
-		goto drop_put_rcu;
+		goto user_put_rcu;
 
 	/* get rid of the GTP header */
 	__skb_pull(skb, sizeof(*gtp1));
@@ -406,12 +407,15 @@ static int gtp1u_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	skb->ip_summed = CHECKSUM_NONE;
 
 	netif_rx(skb);
-
-drop_put_rcu:
 	rcu_read_unlock_bh();
-drop_put:
 	sock_put(sk);
+
 	return 0;
+
+user_put_rcu:
+	rcu_read_unlock_bh();
+user_put:
+	sock_put(sk);
 user:
 	return 1;
 }
