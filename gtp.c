@@ -562,22 +562,6 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 		goto tx_error;
 	}
 
-	payload_len = skb->len;
-
-	/* Pushing GTP header */
-	pr_info("pushing gtp header\n");
-	switch (pctx->gtp_version) {
-	case GTP_V0:
-		gtp0_push_header(skb, pctx, payload_len);
-		break;
-	case GTP_V1:
-		gtp1u_push_header(skb, pctx, payload_len);
-		break;
-	default:
-		/* Should not happen */
-		goto out;
-	}
-
 	memset(&(IPCB(skb)->opt), 0, sizeof(IPCB(skb)->opt));
 	IPCB(skb)->flags &= ~(IPSKB_XFRM_TUNNEL_SIZE | IPSKB_XFRM_TRANSFORMED |
 			      IPSKB_REROUTED);
@@ -611,6 +595,19 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 //#warning FIXME implement IPv6
 	}
 #endif
+
+	/* Annotate length of the encapsulated packet */
+	payload_len = skb->len;
+
+	/* Push down GTP header */
+	switch (pctx->gtp_version) {
+	case GTP_V0:
+		gtp0_push_header(skb, pctx, payload_len);
+		break;
+	case GTP_V1:
+		gtp1u_push_header(skb, pctx, payload_len);
+		break;
+	}
 
 	/* Push down and install the UDP header. */
 	skb_push(skb, sizeof(struct udphdr));
@@ -652,9 +649,6 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	err = ip_local_out(skb);
 	gtp_iptunnel_xmit_stats(err, &dev->stats, dev->tstats);
 
-	return NETDEV_TX_OK;
-out:
-	rcu_read_unlock_bh();
 	return NETDEV_TX_OK;
 tx_error:
 	rcu_read_unlock_bh();
