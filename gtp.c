@@ -230,7 +230,7 @@ static int gtp0_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	/* look-up the PDP context for the Tunnel ID */
 	tid = be64_to_cpu(gtp0->tid);
 
-	rcu_read_lock_bh();
+	rcu_read_lock();
 	pctx = gtp0_pdp_find(gti, tid);
 	if (!pctx)
 		goto user_put_rcu;
@@ -261,13 +261,13 @@ static int gtp0_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 
 	netif_rx(skb);
 
-	rcu_read_unlock_bh();
+	rcu_read_unlock();
 	sock_put(sk);
 
 	return 0;
 
 user_put_rcu:
-	rcu_read_unlock_bh();
+	rcu_read_unlock();
 user_put:
 	sock_put(sk);
 user:
@@ -333,7 +333,7 @@ static int gtp1u_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 
 	/* look-up the PDP context for the Tunnel ID */
 	tid = ntohl(gtp1->tid);
-	rcu_read_lock_bh();
+	rcu_read_lock();
 	pctx = gtp1_pdp_find(gti, tid);
 	if (!pctx)
 		goto user_put_rcu;
@@ -363,13 +363,13 @@ static int gtp1u_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	skb->ip_summed = CHECKSUM_NONE;
 
 	netif_rx(skb);
-	rcu_read_unlock_bh();
+	rcu_read_unlock();
 	sock_put(sk);
 
 	return 0;
 
 user_put_rcu:
-	rcu_read_unlock_bh();
+	rcu_read_unlock();
 user_put:
 	sock_put(sk);
 user:
@@ -485,7 +485,7 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	/* read the IP desination address and resolve the PDP context.
 	 * Prepend PDP header with TEI/TID from PDP ctx */
-	rcu_read_lock_bh();
+	rcu_read_lock();
 	if (skb->protocol == htons(ETH_P_IP)) {
 		old_iph = ip_hdr(skb);
 		pctx = ipv4_pdp_find(gti, old_iph->daddr);
@@ -495,7 +495,7 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	}
 
 	if (!pctx) {
-		rcu_read_unlock_bh();
+		rcu_read_unlock();
 		pr_info("no pdp ctx found, skipping\n");
 		return NETDEV_TX_OK;
 	}
@@ -602,7 +602,7 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	pr_info("gtp -> IP src: %pI4 dst: %pI4\n", &iph->saddr, &iph->daddr);
 
-	rcu_read_unlock_bh();
+	rcu_read_unlock();
 
 	nf_reset(skb);
 
@@ -611,7 +611,7 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	return NETDEV_TX_OK;
 tx_error:
-	rcu_read_unlock_bh();
+	rcu_read_unlock();
 	pr_info("no route to reach destination\n");
 	dev->stats.tx_errors++;
 	dev_kfree_skb(skb);
