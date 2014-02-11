@@ -369,14 +369,12 @@ user:
 	return 1;
 }
 
-static struct lock_class_key gtp_eth_tx_busylock;
 static int gtp_dev_init(struct net_device *dev)
 {
 	struct gtp_instance *gti = netdev_priv(dev);
 
 	dev->flags              = IFF_NOARP;
-	gti->dev = dev;
-	dev->qdisc_tx_busylock = &gtp_eth_tx_busylock;
+	gti->dev		= dev;
 
 	dev->tstats = alloc_percpu(struct pcpu_sw_netstats);
 	if (!dev->tstats)
