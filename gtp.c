@@ -190,43 +190,23 @@ static inline struct gtp_instance *sk_to_gti(struct sock *sk)
 	return gti;
 }
 
-/* UDP encapsulation receive handler. See net/ipv4/udp.c.
- * Return codes: 0: succes, <0: error, >0: passed up to userspace UDP */
-static int gtp0_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
+static int gtp0_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 {
 	struct gtp0_header *gtp0;
-	struct gtp_instance *gti;
 	struct pdp_ctx *pctx;
 	u64 tid;
 
 	pr_info("gtp0 udp received\n");
 
-	/* resolve the GTP instance to which the socket belongs */
-	gti = sk_to_gti(sk);
-	if (!gti)
-		goto user;
-
-	/* UDP verifies the packet length, but this may be fragmented, so make
-	 * sure the UDP header is linear.
-	 */
-	if (!pskb_may_pull(skb, sizeof(struct udphdr)))
-		goto user_put;
-
-	__skb_pull(skb, sizeof(struct udphdr));
-
-	/* check for sufficient header size */
-	if (!pskb_may_pull(skb, sizeof(*gtp0)))
-		goto user_put;
-
 	gtp0 = (struct gtp0_header *)skb->data;
 
 	/* check for GTP Version 0 */
 	if ((gtp0->flags >> 5) != 0)
-		goto user_put;
+		goto out;
 
 	/* check if it is T-PDU. if not -> userspace */
 	if (gtp0->type != GTP_TPDU)
-		goto user_put;
+		goto out;
 
 	/* look-up the PDP context for the Tunnel ID */
 	tid = be64_to_cpu(gtp0->tid);
@@ -234,7 +214,7 @@ static int gtp0_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	rcu_read_lock();
 	pctx = gtp0_pdp_find(gti, tid);
 	if (!pctx)
-		goto user_put_rcu;
+		goto out_rcu;
 
 	/* get rid of the GTP header */
 	__skb_pull(skb, sizeof(*gtp0));
@@ -244,68 +224,35 @@ static int gtp0_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	/* FIXME: check if the inner IP header has the source address
 	 * assigned to the current MS */
 
-	/* re-submit via virtual tunnel device into regular network
-	 * stack */
-	secpath_reset(skb);
-	skb_dst_drop(skb);
-	nf_reset(skb);
-
-	skb->dev = gti->dev;
-
-	/* Force the upper layers to verify it. */
-	skb->ip_summed = CHECKSUM_NONE;
-
-	netif_rx(skb);
-
 	rcu_read_unlock();
-	sock_put(sk);
-
 	return 0;
 
-user_put_rcu:
+out_rcu:
 	rcu_read_unlock();
-user_put:
-	sock_put(sk);
-user:
+out:
 	return 1;
 }
 
-/* UDP encapsulation receive handler. See net/ipv4/udp.c.
- * Return codes: 0: succes, <0: error, >0: passed up to userspace UDP */
-static int gtp1u_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
+static int gtp1u_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 {
 	struct gtp1_header_short *gtp1;
 	struct gtp0_header *gtp0;
-	struct gtp_instance *gti;
 	struct pdp_ctx *pctx;
+	u32 tid;
 	unsigned int min_len = sizeof(*gtp1);
-	u64 tid;
 
 	pr_info("gtp1 udp received\n");
 
-	/* resolve the GTP instance to which the socket belongs */
-	gti = sk_to_gti(sk);
-	if (!gti)
-		goto user;
-
-	/* UDP verifies the packet length, but this may be fragmented, so make
-	 * sure the UDP header is linear.
-	 */
-	if (!pskb_may_pull(skb, sizeof(struct udphdr)))
-		goto user_put;
-
-	__skb_pull(skb, sizeof(struct udphdr));
-
 	/* check for sufficient header size */
 	if (!pskb_may_pull(skb, sizeof(*gtp1)))
-		goto user_put;
+		goto out;
 
 	gtp1 = (struct gtp1_header_short *)skb->data;
 	gtp0 = (struct gtp0_header *)gtp1;
 
 	/* check for GTP Version 1 */
 	if ((gtp0->flags >> 5) != 1)
-		goto user_put;
+		goto out;
 
 	/* FIXME: a look-up table might be faster than computing the
 	 * length iteratively */
@@ -324,11 +271,11 @@ static int gtp1u_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 
 	/* check if it is T-PDU. */
 	if (gtp0->type != GTP_TPDU)
-		goto user_put;
+		goto out;
 
 	/* check for sufficient header size */
 	if (!pskb_may_pull(skb, sizeof(struct udphdr) + min_len))
-		goto user_put;
+		goto out;
 
 	/* FIXME: actually take care of extension header chain */
 
@@ -337,18 +284,72 @@ static int gtp1u_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	rcu_read_lock();
 	pctx = gtp1_pdp_find(gti, tid);
 	if (!pctx)
-		goto user_put_rcu;
+		goto out_rcu;
 
 	/* get rid of the GTP header */
 	__skb_pull(skb, sizeof(*gtp1));
 
-	skb_reset_network_header(skb);
-
 	/* FIXME: check if the inner IP header has the source address
 	 * assigned to the current MS */
 
-	/* re-submit via virtual tunnel device into regular network
-	 * stack */
+	rcu_read_unlock();
+	return 0;
+
+out_rcu:
+	rcu_read_unlock();
+out:
+	return 1;
+}
+
+/* UDP encapsulation receive handler. See net/ipv4/udp.c.
+ * Return codes: 0: success, <0: error, >0: passed up to userspace UDP.
+ */
+static int gtp_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
+{
+	struct gtp_instance *gti;
+	int ret;
+
+	pr_info("gtp udp received\n");
+
+	/* resolve the GTP instance to which the socket belongs */
+	gti = sk_to_gti(sk);
+	if (!gti)
+		goto user;
+
+	/* UDP verifies the packet length, but this may be fragmented, so make
+	 * sure the UDP header is linear.
+	 */
+	if (!pskb_may_pull(skb, sizeof(struct udphdr)))
+		goto user_put;
+
+	__skb_pull(skb, sizeof(struct udphdr));
+
+	switch (udp_sk(sk)->encap_type) {
+	case UDP_ENCAP_GTP0:
+		ret = gtp0_udp_encap_recv(gti, skb);
+		break;
+	case UDP_ENCAP_GTP1U:
+		ret = gtp1u_udp_encap_recv(gti, skb);
+		break;
+	default:
+		ret = 1; /* shouldn't happen */
+	}
+
+	/* Not a valid GTP packet, restore the UDP header and pass it up to
+	 * the stack.
+	 */
+	if (ret) {
+		__skb_push(skb, sizeof(struct udphdr));
+		goto user_put;
+	}
+
+	/* Now that the UDP and the GTP header have been removed, set up the
+	 * new network header. This is required by the upper later to
+	 * calculate the transport header.
+	 */
+	skb_reset_network_header(skb);
+
+	/* re-submit via virtual tunnel device into regular network stack */
 	secpath_reset(skb);
 	skb_dst_drop(skb);
 	nf_reset(skb);
@@ -359,13 +360,10 @@ static int gtp1u_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	skb->ip_summed = CHECKSUM_NONE;
 
 	netif_rx(skb);
-	rcu_read_unlock();
 	sock_put(sk);
 
 	return 0;
 
-user_put_rcu:
-	rcu_read_unlock();
 user_put:
 	sock_put(sk);
 user:
@@ -746,7 +744,7 @@ static int gtp_create_bind_sock(struct gtp_instance *gti)
 
 	sk = gti->sock0->sk;
 	udp_sk(sk)->encap_type = UDP_ENCAP_GTP0;
-	udp_sk(sk)->encap_rcv = gtp0_udp_encap_recv;
+	udp_sk(sk)->encap_rcv = gtp_udp_encap_recv;
 	sk->sk_user_data = gti;
 	udp_encap_enable();
 
@@ -764,7 +762,7 @@ static int gtp_create_bind_sock(struct gtp_instance *gti)
 
 	sk = gti->sock1u->sk;
 	udp_sk(sk)->encap_type = UDP_ENCAP_GTP1U;
-	udp_sk(sk)->encap_rcv = gtp1u_udp_encap_recv;
+	udp_sk(sk)->encap_rcv = gtp_udp_encap_recv;
 	sk->sk_user_data = gti;
 
 	return 0;
