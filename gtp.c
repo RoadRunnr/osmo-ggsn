@@ -206,7 +206,12 @@ static int gtp0_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	if (!gti)
 		goto user;
 
-	/* UDP always verifies the packet length. */
+	/* UDP verifies the packet length, but this may be fragmented, so make
+	 * sure the UDP header is linear.
+	 */
+	if (!pskb_may_pull(skb, sizeof(struct udphdr)))
+		goto user_put;
+
 	__skb_pull(skb, sizeof(struct udphdr));
 
 	/* check for sufficient header size */
@@ -283,7 +288,12 @@ static int gtp1u_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	if (!gti)
 		goto user;
 
-	/* UDP always verifies the packet length. */
+	/* UDP verifies the packet length, but this may be fragmented, so make
+	 * sure the UDP header is linear.
+	 */
+	if (!pskb_may_pull(skb, sizeof(struct udphdr)))
+		goto user_put;
+
 	__skb_pull(skb, sizeof(struct udphdr));
 
 	/* check for sufficient header size */
