@@ -230,7 +230,7 @@ static int gtp0_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 out_rcu:
 	rcu_read_unlock();
 out:
-	return 1;
+	return -1;
 }
 
 static int gtp1u_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
@@ -298,7 +298,7 @@ static int gtp1u_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 out_rcu:
 	rcu_read_unlock();
 out:
-	return 1;
+	return -1;
 }
 
 /* UDP encapsulation receive handler. See net/ipv4/udp.c.
@@ -332,16 +332,12 @@ static int gtp_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 		ret = gtp1u_udp_encap_recv(gti, skb);
 		break;
 	default:
-		ret = 1; /* shouldn't happen */
+		ret = -1; /* shouldn't happen */
 	}
 
-	/* Not a valid GTP packet, restore the UDP header and pass it up to
-	 * the stack.
-	 */
-	if (ret) {
-		__skb_push(skb, sizeof(struct udphdr));
-		goto user_put;
-	}
+	/* Not a valid GTP packet, drop it. */
+	if (unlikely(ret < 0))
+		goto drop;
 
 	/* Now that the UDP and the GTP header have been removed, set up the
 	 * new network header. This is required by the upper later to
@@ -362,6 +358,9 @@ static int gtp_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	netif_rx(skb);
 	sock_put(sk);
 
+	return 0;
+drop:
+	kfree_skb(skb);
 	return 0;
 
 user_put:
