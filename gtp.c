@@ -383,6 +383,11 @@ static int gtp_dev_init(struct net_device *dev)
 	return 0;
 }
 
+static void gtp_dev_uninit(struct net_device *dev)
+{
+	free_percpu(dev->tstats);
+}
+
 #define IP_UDP_LEN	(sizeof(struct iphdr) + sizeof(struct udphdr))
 
 static struct rtable *
@@ -611,6 +616,7 @@ tx_error:
 
 static const struct net_device_ops gtp_netdev_ops = {
 	.ndo_init		= gtp_dev_init,
+	.ndo_uninit		= gtp_dev_uninit,
 	.ndo_start_xmit		= gtp_dev_xmit,
 };
 
