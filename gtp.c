@@ -415,7 +415,7 @@ gtp0_push_header(struct sk_buff *skb, struct pdp_ctx *pctx, int payload_len)
 	gtp0->flags = 0x1e; /* V0, GTP-non-prime */
 	gtp0->type = GTP_TPDU;
 	gtp0->length = htons(payload_len);
-	gtp0->seq = htons(atomic_inc_return(&pctx->tx_seq) % 0xffff);
+	gtp0->seq = htons((atomic_inc_return(&pctx->tx_seq)-1) % 0xffff);
 	gtp0->flow = htonl(pctx->flow);
 	gtp0->number = 0xFF;
 	gtp0->spare[0] = gtp0->spare[1] = gtp0->spare[2] = 0xFF;
@@ -942,6 +942,7 @@ static int ipv4_pdp_add(struct gtp_instance *gti, struct genl_info *info)
 	pctx->tid = tid;
 	pctx->sgsn_addr.ip4.s_addr = sgsn_addr;
 	pctx->ms_addr.ip4.s_addr = ms_addr;
+	atomic_set(&pctx->tx_seq, 0);
 
 	hash_tid = ipv4_hashfn(tid) % gti->hash_size;
 
