@@ -543,9 +543,8 @@ static int gtp_ip4_prepare_xmit(struct sk_buff *skb, struct net_device *dev,
 	/* There is a routing loop */
 	if (tdev == dev) {
 		pr_info("rt loop, skipping\n");
-		ip_rt_put(rt);
 		dev->stats.collisions++;
-		goto err;
+		goto err_rt;
 	}
 
 	memset(&(IPCB(skb)->opt), 0, sizeof(IPCB(skb)->opt));
@@ -571,13 +570,14 @@ static int gtp_ip4_prepare_xmit(struct sk_buff *skb, struct net_device *dev,
 	    mtu < ntohs(iph->tot_len)) {
 		icmp_send(skb, ICMP_DEST_UNREACH, ICMP_FRAG_NEEDED,
 			  htonl(mtu));
-		ip_rt_put(rt);
-		goto err;
+		goto err_rt;
 	}
 
 	gtp_set_pktinfo_ipv4(pktinfo, iph, pctx, rt, &fl4);
 
 	return 0;
+err_rt:
+	ip_rt_put(rt);
 err:
 	return -1;
 }
