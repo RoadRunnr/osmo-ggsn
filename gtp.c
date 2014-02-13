@@ -284,15 +284,15 @@ static int gtp1u_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 	 * length iteratively */
 
 	/* sequence number present */
-	if (gtp1->flags & 0x02)
+	if (gtp1->flags & GTP1_F_SEQ)
 		min_len += 2;
 
 	/* N-PDU number present */
-	if (gtp1->flags & 0x01)
+	if (gtp1->flags & GTP1_F_NPDU)
 		min_len++;
 
 	/* next extension header type present */
-	if (gtp1->flags & 0x04)
+	if (gtp1->flags & GTP1_F_EXTHDR)
 		min_len += 1;
 
 	/* check if it is T-PDU. */
