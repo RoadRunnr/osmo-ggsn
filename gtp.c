@@ -265,7 +265,6 @@ static int gtp1u_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 {
 	struct gtp1_header *gtp1;
 	struct pdp_ctx *pctx;
-	u32 tid;
 	unsigned int min_len = sizeof(*gtp1);
 
 	pr_info("gtp1 udp received\n");
@@ -306,9 +305,8 @@ static int gtp1u_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 	/* FIXME: actually take care of extension header chain */
 
 	/* look-up the PDP context for the Tunnel ID */
-	tid = ntohl(gtp1->tid);
 	rcu_read_lock();
-	pctx = gtp1_pdp_find(gti, tid);
+	pctx = gtp1_pdp_find(gti, ntohl(gtp1->tid));
 	if (!pctx)
 		goto out_rcu;
 
