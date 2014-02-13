@@ -32,13 +32,11 @@ struct gtp0_header {	/* According to GSM TS 09.60 */
 	__be64	tid;
 } __attribute__ ((packed));
 
-struct gtp1_header_short { /* According to 3GPP TS 29.060 */
+struct gtp1_header { /* According to 3GPP TS 29.060 */
 	__u8	flags;
 	__u8	type;
 	__be16	length;
 	__be32	tid;
 } __attribute__ ((packed));
-
-#define gtp1u_header gtp1_header_short /* XXX */
 
 #endif

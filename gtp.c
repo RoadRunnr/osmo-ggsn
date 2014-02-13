@@ -263,7 +263,7 @@ out:
 
 static int gtp1u_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 {
-	struct gtp1_header_short *gtp1;
+	struct gtp1_header *gtp1;
 	struct gtp0_header *gtp0;
 	struct pdp_ctx *pctx;
 	u32 tid;
@@ -275,7 +275,7 @@ static int gtp1u_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 	if (!pskb_may_pull(skb, sizeof(*gtp1)))
 		goto out;
 
-	gtp1 = (struct gtp1_header_short *)skb->data;
+	gtp1 = (struct gtp1_header *)skb->data;
 	gtp0 = (struct gtp0_header *)gtp1;
 
 	/* check for GTP Version 1 */
@@ -451,18 +451,18 @@ gtp0_push_header(struct sk_buff *skb, struct pdp_ctx *pctx, int payload_len)
 }
 
 static inline void
-gtp1u_push_header(struct sk_buff *skb, struct pdp_ctx *pctx, int payload_len)
+gtp1_push_header(struct sk_buff *skb, struct pdp_ctx *pctx, int payload_len)
 {
-	struct gtp1u_header *gtp1u;
+	struct gtp1_header *gtp1;
 
 	/* ensure there is sufficient headroom */
-	skb_cow(skb, sizeof(*gtp1u) + IP_UDP_LEN);
-	gtp1u = (struct gtp1u_header *) skb_push(skb, sizeof(*gtp1u));
+	skb_cow(skb, sizeof(*gtp1) + IP_UDP_LEN);
+	gtp1 = (struct gtp1_header *) skb_push(skb, sizeof(*gtp1));
 
-	gtp1u->flags = 0x10; /* V1, GTP-non-prime */
-	gtp1u->type = GTP_TPDU;
-	gtp1u->length = htons(payload_len);
-	gtp1u->tid = htonl((u32)pctx->tid);
+	gtp1->flags = 0x10; /* V1, GTP-non-prime */
+	gtp1->type = GTP_TPDU;
+	gtp1->length = htons(payload_len);
+	gtp1->tid = htonl((u32)pctx->tid);
 }
 
 /* From Linux kernel 3.13: iptunnel_xmit_stats() */
@@ -589,7 +589,7 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 		gtp0_push_header(skb, pctx, payload_len);
 		break;
 	case GTP_V1:
-		gtp1u_push_header(skb, pctx, payload_len);
+		gtp1_push_header(skb, pctx, payload_len);
 		break;
 	}
 
