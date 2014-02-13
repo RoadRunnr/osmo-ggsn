@@ -264,7 +264,6 @@ out:
 static int gtp1u_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 {
 	struct gtp1_header *gtp1;
-	struct gtp0_header *gtp0;
 	struct pdp_ctx *pctx;
 	u32 tid;
 	unsigned int min_len = sizeof(*gtp1);
@@ -276,29 +275,28 @@ static int gtp1u_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 		goto out;
 
 	gtp1 = (struct gtp1_header *)skb->data;
-	gtp0 = (struct gtp0_header *)gtp1;
 
 	/* check for GTP Version 1 */
-	if ((gtp0->flags >> 5) != 1)
+	if ((gtp1->flags >> 5) != GTP_V1)
 		goto out;
 
 	/* FIXME: a look-up table might be faster than computing the
 	 * length iteratively */
 
 	/* sequence number present */
-	if (gtp0->flags & 0x02)
+	if (gtp1->flags & 0x02)
 		min_len += 2;
 
 	/* N-PDU number present */
-	if (gtp0->flags & 0x01)
+	if (gtp1->flags & 0x01)
 		min_len++;
 
 	/* next extension header type present */
-	if (gtp0->flags & 0x04)
+	if (gtp1->flags & 0x04)
 		min_len += 1;
 
 	/* check if it is T-PDU. */
-	if (gtp0->type != GTP_TPDU)
+	if (gtp1->type != GTP_TPDU)
 		goto out;
 
 	/* check for sufficient header size */
