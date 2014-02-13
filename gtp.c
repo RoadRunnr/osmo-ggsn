@@ -190,6 +190,36 @@ static inline struct gtp_instance *sk_to_gti(struct sock *sk)
 	return gti;
 }
 
+/* Check if the inner IP header has the source address assigned to the
+ * current MS.
+ */
+static bool gtp_check_src_ms(struct sk_buff *skb, struct pdp_ctx *pctx)
+{
+	bool ret = false;
+
+	if (skb->protocol == ntohs(ETH_P_IP)) {
+		struct iphdr *iph;
+
+		if (!pskb_may_pull(skb, sizeof(struct iphdr)))
+			return false;
+
+		iph = (struct iphdr *)skb->data;
+		ret = (iph->saddr != pctx->ms_addr.ip4.s_addr);
+
+	} else if (skb->protocol == ntohs(ETH_P_IPV6)) {
+		struct ipv6hdr *ip6h;
+
+		if (!pskb_may_pull(skb, sizeof(struct ipv6hdr)))
+			return false;
+
+		ip6h = (struct ipv6hdr *)skb->data;
+		ret = memcmp(&ip6h->saddr, &pctx->ms_addr.ip6,
+			     sizeof(struct in6_addr)) == 0;
+	}
+
+	return ret;
+}
+
 static int gtp0_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 {
 	struct gtp0_header *gtp0;
@@ -221,8 +251,8 @@ static int gtp0_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 
 	skb_reset_network_header(skb);
 
-	/* FIXME: check if the inner IP header has the source address
-	 * assigned to the current MS */
+	if (!gtp_check_src_ms(skb, pctx))
+		goto out_rcu;
 
 	rcu_read_unlock();
 	return 0;
@@ -289,8 +319,8 @@ static int gtp1u_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 	/* get rid of the GTP header */
 	__skb_pull(skb, sizeof(*gtp1));
 
-	/* FIXME: check if the inner IP header has the source address
-	 * assigned to the current MS */
+	if (!gtp_check_src_ms(skb, pctx))
+		goto out_rcu;
 
 	rcu_read_unlock();
 	return 0;
