@@ -111,7 +111,7 @@ static struct pdp_ctx *gtp0_pdp_find(struct gtp_instance *gti, u64 tid)
 	head = &gti->tid_hash[gtp0_hashfn(tid) % gti->hash_size];
 
 	hlist_for_each_entry_rcu(pdp, head, hlist_tid) {
-		if (pdp->gtp_version == 0 && pdp->tid == tid)
+		if (pdp->gtp_version == GTP_V0 && pdp->tid == tid)
 			return pdp;
 	}
 
@@ -127,7 +127,7 @@ static struct pdp_ctx *gtp1_pdp_find(struct gtp_instance *gti, u32 tid)
 	head = &gti->tid_hash[gtp1u_hashfn(tid) % gti->hash_size];
 
 	hlist_for_each_entry_rcu(pdp, head, hlist_tid) {
-		if (pdp->gtp_version == 1 && pdp->tid == tid)
+		if (pdp->gtp_version == GTP_V1 && pdp->tid == tid)
 			return pdp;
 	}
 
