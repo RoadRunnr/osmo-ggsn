@@ -98,9 +98,9 @@ static inline u32 ipv4_hashfn(u32 ip)
 
 static inline u32 ipv6_hashfn(struct in6_addr *ip6)
 {
-	return jhash2((const u32 *) &ip6->s6_addr32, sizeof(*ip6)/4, gtp_h_initval);
+	return jhash2((const u32 *) &ip6->s6_addr32, sizeof(*ip6)/sizeof(u32),
+		      gtp_h_initval);
 }
-
 
 /* resolve a PDP context structure based on the 64bit TID */
 static struct pdp_ctx *gtp0_pdp_find(struct gtp_instance *gti, u64 tid)
