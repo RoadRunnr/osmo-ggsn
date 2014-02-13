@@ -249,8 +249,6 @@ static int gtp0_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 	/* get rid of the GTP header */
 	__skb_pull(skb, sizeof(*gtp0));
 
-	skb_reset_network_header(skb);
-
 	if (!gtp_check_src_ms(skb, pctx))
 		goto out_rcu;
 
