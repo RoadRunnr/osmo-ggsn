@@ -481,43 +481,49 @@ gtp_iptunnel_xmit_stats(int err, struct net_device_stats *err_stats,
 	}
 }
 
-static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
+struct gtp_pktinfo {
+	union {
+		struct iphdr	*iph;
+		struct ipv6hdr	*ip6h;
+	};
+	union {
+		struct flowi4	fl4;
+	};
+	struct rtable		*rt;
+	struct pdp_ctx		*pctx;
+};
+
+static inline void
+gtp_set_pktinfo_ipv4(struct gtp_pktinfo *pktinfo, struct iphdr *iph,
+		     struct pdp_ctx *pctx, struct rtable *rt,
+		     struct flowi4 *fl4)
+{
+	pktinfo->iph	= iph;
+	pktinfo->pctx	= pctx;
+	pktinfo->rt	= rt;
+	pktinfo->fl4	= *fl4;
+}
+
+static int gtp_ip4_prepare_xmit(struct sk_buff *skb, struct net_device *dev,
+				struct gtp_pktinfo *pktinfo)
 {
 	struct gtp_instance *gti = netdev_priv(dev);
-	struct pdp_ctx *pctx = NULL;
-	struct iphdr *old_iph, *iph;
-	struct ipv6hdr *old_iph6;
-	struct udphdr *uh;
-	unsigned int payload_len;
-	int df, mtu, err;
-	struct rtable *rt = NULL;
-	struct flowi4 fl4;
+	struct inet_sock *inet = inet_sk(gti->sock0->sk);
 	struct net_device *tdev;
-	struct inet_sock *inet;
+	struct iphdr *iph;
+	struct pdp_ctx *pctx;
+	struct rtable *rt;
+	struct flowi4 fl4;
+	int df, mtu;
 
-	/* UDP socket not initialized, skip */
-	if (!gti->sock0) {
-		pr_info("xmit: no socket / need cfg, skipping\n");
-		return NETDEV_TX_OK;
-	}
-
-	inet = inet_sk(gti->sock0->sk);
-
-	/* read the IP desination address and resolve the PDP context.
-	 * Prepend PDP header with TEI/TID from PDP ctx */
-	rcu_read_lock();
-	if (skb->protocol == htons(ETH_P_IP)) {
-		old_iph = ip_hdr(skb);
-		pctx = ipv4_pdp_find(gti, old_iph->daddr);
-	} else if (skb->protocol == htons(ETH_P_IPV6)) {
-		old_iph6 = ipv6_hdr(skb);
-		pctx = ipv6_pdp_find(gti, &old_iph6->daddr);
-	}
-
+	/* Read the IP destination address and resolve the PDP context.
+	 * Prepend PDP header with TEI/TID from PDP ctx.
+	 */
+	iph = ip_hdr(skb);
+	pctx = ipv4_pdp_find(gti, iph->daddr);
 	if (!pctx) {
-		rcu_read_unlock();
 		pr_info("no pdp ctx found, skipping\n");
-		return NETDEV_TX_OK;
+		return -1;
 	}
 
 	pr_info("found pdp ctx %p\n", pctx);
@@ -530,7 +536,7 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	if (IS_ERR(rt)) {
 		pr_info("no rt found, skipping\n");
 		dev->stats.tx_carrier_errors++;
-		goto tx_error;
+		goto err;
 	}
 	tdev = rt->dst.dev;
 
@@ -539,7 +545,7 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 		pr_info("rt loop, skipping\n");
 		ip_rt_put(rt);
 		dev->stats.collisions++;
-		goto tx_error;
+		goto err;
 	}
 
 	memset(&(IPCB(skb)->opt), 0, sizeof(IPCB(skb)->opt));
@@ -548,8 +554,7 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	skb_dst_drop(skb);
 	skb_dst_set(skb, &rt->dst);
 
-	old_iph = ip_hdr(skb);
-	df = old_iph->frag_off;
+	df = iph->frag_off;
 	if (df)
 		// XXX: tunnel->hlen: it depends on GTP0 / GTP1
 		mtu = dst_mtu(&rt->dst) - dev->hard_header_len -
@@ -560,32 +565,97 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	if (skb_dst(skb))
 		skb_dst(skb)->ops->update_pmtu(skb_dst(skb), NULL, skb, mtu);
 
-	if (skb->protocol == htons(ETH_P_IP)) {
-		df |= (old_iph->frag_off & htons(IP_DF));
+	df |= (iph->frag_off & htons(IP_DF));
 
-		if ((old_iph->frag_off & htons(IP_DF)) &&
-		    mtu < ntohs(old_iph->tot_len)) {
-			icmp_send(skb, ICMP_DEST_UNREACH, ICMP_FRAG_NEEDED,
-				  htonl(mtu));
-			ip_rt_put(rt);
-			goto tx_error;
-		}
-#if IS_ENABLED(CONFIG_IPV6)
-	} else if (skb->protocol == htons(ETH_P_IPV6)) {
-//#warning FIXME implement IPv6
+	if ((iph->frag_off & htons(IP_DF)) &&
+	    mtu < ntohs(iph->tot_len)) {
+		icmp_send(skb, ICMP_DEST_UNREACH, ICMP_FRAG_NEEDED,
+			  htonl(mtu));
+		ip_rt_put(rt);
+		goto err;
 	}
-#endif
+
+	gtp_set_pktinfo_ipv4(pktinfo, iph, pctx, rt, &fl4);
+
+	return 0;
+err:
+	return -1;
+}
+
+static int gtp_ip6_prepare_xmit(struct sk_buff *skb, struct net_device *dev,
+				struct gtp_pktinfo *pktinfo)
+{
+	/* TODO IPV6 support */
+	return 0;
+}
+
+static inline void
+gtp_push_ip4hdr(struct sk_buff *skb, struct gtp_pktinfo *pktinfo)
+{
+	struct iphdr *iph;
+
+	/* Push down and install the IP header. Similar to iptunnel_xmit() */
+	skb_push(skb, sizeof(struct iphdr));
+	skb_reset_network_header(skb);
+
+	iph = ip_hdr(skb);
+
+	iph->version	=	4;
+	iph->ihl	=	sizeof(struct iphdr) >> 2;
+	iph->frag_off	=	pktinfo->iph->frag_off;
+	iph->protocol	=	IPPROTO_UDP;
+	iph->tos	=	pktinfo->iph->tos;
+	iph->daddr	=	pktinfo->fl4.daddr;
+	iph->saddr	=	pktinfo->fl4.saddr;
+	iph->ttl	=	ip4_dst_hoplimit(&pktinfo->rt->dst);
+
+	pr_info("gtp -> IP src: %pI4 dst: %pI4\n", &iph->saddr, &iph->daddr);
+}
+
+static inline void
+gtp_push_ip6hdr(struct sk_buff *skb, struct gtp_pktinfo *pktinfo)
+{
+	/* TODO IPV6 support */
+}
+
+static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
+{
+	struct gtp_instance *gti = netdev_priv(dev);
+	struct udphdr *uh;
+	unsigned int payload_len;
+	struct gtp_pktinfo pktinfo;
+	unsigned int proto = ntohs(skb->protocol);
+	int err;
+
+	/* UDP socket not initialized, skip */
+	if (!gti->sock0) {
+		pr_info("xmit: no socket / need cfg, skipping\n");
+		return NETDEV_TX_OK;
+	}
+
+	rcu_read_lock();
+	switch (proto) {
+	case ETH_P_IP:
+		err = gtp_ip4_prepare_xmit(skb, dev, &pktinfo);
+		break;
+	case ETH_P_IPV6:
+		err = gtp_ip6_prepare_xmit(skb, dev, &pktinfo);
+		break;
+	}
+
+	if (err < 0)
+		goto tx_error;
 
 	/* Annotate length of the encapsulated packet */
 	payload_len = skb->len;
 
 	/* Push down GTP header */
-	switch (pctx->gtp_version) {
+	switch (pktinfo.pctx->gtp_version) {
 	case GTP_V0:
-		gtp0_push_header(skb, pctx, payload_len);
+		gtp0_push_header(skb, pktinfo.pctx, payload_len);
 		break;
 	case GTP_V1:
-		gtp1_push_header(skb, pctx, payload_len);
+		gtp1_push_header(skb, pktinfo.pctx, payload_len);
 		break;
 	}
 
@@ -594,7 +664,7 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	skb_reset_transport_header(skb);
 
 	uh = udp_hdr(skb);
-	if (pctx->gtp_version == 0)
+	if (pktinfo.pctx->gtp_version == 0)
 		uh->source = uh->dest = htons(GTP0_PORT);
 	else
 		uh->source = uh->dest = htons(GTP1U_PORT);
@@ -605,23 +675,14 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	pr_info("gtp -> UDP src: %u dst: %u (len %u)\n",
 		ntohs(uh->source), ntohs(uh->dest), ntohs(uh->len));
 
-	/* Push down and install the IP header. Similar to iptunnel_xmit() */
-	skb_push(skb, sizeof(struct iphdr));
-	skb_reset_network_header(skb);
-
-	iph = ip_hdr(skb);
-
-	iph->version	=	4;
-	iph->ihl	=	sizeof(struct iphdr) >> 2;
-	iph->frag_off	=	old_iph->frag_off;
-	iph->protocol	=	IPPROTO_UDP;
-	iph->tos	=	old_iph->tos;
-	iph->daddr	=	fl4.daddr;
-	iph->saddr	=	fl4.saddr;
-	iph->ttl	=	ip4_dst_hoplimit(&rt->dst);
-
-	pr_info("gtp -> IP src: %pI4 dst: %pI4\n", &iph->saddr, &iph->daddr);
-
+	switch (proto) {
+	case ETH_P_IP:
+		gtp_push_ip4hdr(skb, &pktinfo);
+		break;
+	case ETH_P_IPV6:
+		gtp_push_ip6hdr(skb, &pktinfo);
+		break;
+	}
 	rcu_read_unlock();
 
 	nf_reset(skb);
