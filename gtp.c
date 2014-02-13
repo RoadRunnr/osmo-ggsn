@@ -265,7 +265,7 @@ static int gtp1u_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 {
 	struct gtp1_header *gtp1;
 	struct pdp_ctx *pctx;
-	unsigned int min_len = sizeof(*gtp1);
+	unsigned int gtp1_hdrlen = sizeof(*gtp1);
 
 	pr_info("gtp1 udp received\n");
 
@@ -284,22 +284,22 @@ static int gtp1u_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 
 	/* sequence number present */
 	if (gtp1->flags & GTP1_F_SEQ)
-		min_len += 2;
+		gtp1_hdrlen += 2;
 
 	/* N-PDU number present */
 	if (gtp1->flags & GTP1_F_NPDU)
-		min_len++;
+		gtp1_hdrlen++;
 
 	/* next extension header type present */
 	if (gtp1->flags & GTP1_F_EXTHDR)
-		min_len += 1;
+		gtp1_hdrlen++;
 
 	/* check if it is T-PDU. */
 	if (gtp1->type != GTP_TPDU)
 		goto out;
 
 	/* check for sufficient header size */
-	if (!pskb_may_pull(skb, sizeof(struct udphdr) + min_len))
+	if (!pskb_may_pull(skb, gtp1_hdrlen))
 		goto out;
 
 	/* FIXME: actually take care of extension header chain */
