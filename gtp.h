@@ -22,21 +22,21 @@
 #define GTP_TPDU	255
 
 struct gtp0_header {	/* According to GSM TS 09.60 */
-	uint8_t flags;
-	uint8_t type;
-	uint16_t length;
-	uint16_t seq;
-	uint16_t flow;
-	uint8_t number;
-	uint8_t spare[3];
-	uint64_t tid;
+	__u8	flags;
+	__u8	type;
+	__be16	length;
+	__be16	seq;
+	__be16	flow;
+	__u8	number;
+	__u8	spare[3];
+	__be64	tid;
 } __attribute__ ((packed));
 
 struct gtp1_header_short { /* According to 3GPP TS 29.060 */
-	uint8_t flags;
-	uint8_t type;
-	uint16_t length;
-	uint32_t tid;
+	__u8	flags;
+	__u8	type;
+	__be16	length;
+	__be32	tid;
 } __attribute__ ((packed));
 
 #define gtp1u_header gtp1_header_short /* XXX */
