@@ -9,6 +9,8 @@
 #include <linux/if_link.h>
 #include <linux/rtnetlink.h>
 
+#include "gtp_nl.h"
+
 int main(int argc, char *argv[])
 {
 	struct mnl_socket *nl;
@@ -17,7 +19,7 @@ int main(int argc, char *argv[])
 	struct ifinfomsg *ifm;
 	int ret;
 	unsigned int seq, portid, change = 0, flags = 0;
-	struct nlattr *nest;
+	struct nlattr *nest, *nest2;
 
 	if (argc != 2) {
 		printf("Usage: %s [ifname]\n", argv[0]);
@@ -36,6 +38,10 @@ int main(int argc, char *argv[])
 	mnl_attr_put_u32(nlh, IFLA_LINK, if_nametoindex(argv[1]));
 	nest = mnl_attr_nest_start(nlh, IFLA_LINKINFO);
 	mnl_attr_put_str(nlh, IFLA_INFO_KIND, "gtp");
+	nest2 = mnl_attr_nest_start(nlh, IFLA_INFO_DATA);
+	mnl_attr_put_u32(nlh, IFLA_GTP_LOCAL_ADDR_IPV4, 0);
+	mnl_attr_put_u32(nlh, IFLA_GTP_HASHSIZE, 131072);
+	mnl_attr_nest_end(nlh, nest2);
 	mnl_attr_nest_end(nlh, nest);
 
 	nl = mnl_socket_open(NETLINK_ROUTE);

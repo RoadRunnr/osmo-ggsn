@@ -28,6 +28,7 @@
 #include "gtp_nl.h"
 
 static u32 gtp_h_initval;
+static struct workqueue_struct *gtp_wq;
 
 struct pdp_ctx {
 	struct hlist_node hlist_tid;
@@ -60,8 +61,6 @@ struct pdp_ctx {
 struct gtp_instance {
 	struct list_head list;
 
-	bool socket_enabled;
-
 	/* address for local UDP socket */
 	struct sockaddr_in gtp0_addr;
 	struct sockaddr_in gtp1u_addr;
@@ -69,6 +68,7 @@ struct gtp_instance {
 	/* the socket */
 	struct socket *sock0;
 	struct socket *sock1u;
+	struct work_struct sock_work;
 
 	struct net_device *dev;
 	struct net_device *real_dev;
@@ -403,11 +403,19 @@ static int gtp_dev_init(struct net_device *dev)
 	if (!dev->tstats)
 		return -ENOMEM;
 
+	/* create the socket outside of rtnl to avoid a possible deadlock */
+	queue_work(gtp_wq, &gti->sock_work);
+
 	return 0;
 }
 
+static void gtp_destroy_bind_sock(struct gtp_instance *gti);
+
 static void gtp_dev_uninit(struct net_device *dev)
 {
+	struct gtp_instance *gti = netdev_priv(dev);
+
+	gtp_destroy_bind_sock(gti);
 	free_percpu(dev->tstats);
 }
 
@@ -707,21 +715,39 @@ static const struct net_device_ops gtp_netdev_ops = {
 	.ndo_start_xmit		= gtp_dev_xmit,
 };
 
+static int gtp_create_bind_sock(struct gtp_instance *gti);
+
+/* Scheduled at device creation to bind to a socket */
+static void gtp_sock_work(struct work_struct *work)
+{
+	struct gtp_instance *gti =
+		container_of(work, struct gtp_instance, sock_work);
+
+	gtp_create_bind_sock(gti);
+}
+
 static void gtp_link_setup(struct net_device *dev)
 {
+	struct gtp_instance *gti = netdev_priv(dev);
+
 	dev->priv_flags		&= ~(IFF_TX_SKB_SHARING);
 	dev->tx_queue_len	= 0;
 
 	dev->netdev_ops		= &gtp_netdev_ops;
 	dev->destructor		= free_netdev;
+
+	INIT_WORK(&gti->sock_work, gtp_sock_work);
 }
+
+static int gtp_hashtable_new(struct gtp_instance *gti, int hsize);
+static void gtp_hashtable_free(struct gtp_instance *gti);
 
 static int gtp_newlink(struct net *src_net, struct net_device *dev,
 			struct nlattr *tb[], struct nlattr *data[])
 {
 	struct net_device *real_dev;
 	struct gtp_instance *gti;
-	int err;
+	int hashsize, err;
 
 	pr_info("gtp_newlink\n");
 
@@ -742,6 +768,19 @@ static int gtp_newlink(struct net *src_net, struct net_device *dev,
 	gti = netdev_priv(dev);
 	gti->real_dev = real_dev;
 
+	gti->gtp0_addr.sin_addr.s_addr =
+	gti->gtp1u_addr.sin_addr.s_addr =
+		nla_get_u32(data[IFLA_GTP_LOCAL_ADDR_IPV4]);
+
+	if (!data[IFLA_GTP_HASHSIZE])
+		hashsize = 1024;
+	else
+		hashsize = nla_get_u32(data[IFLA_GTP_HASHSIZE]);
+
+	err = gtp_hashtable_new(gti, hashsize);
+	if (err < 0)
+		return err;
+
 	err = register_netdevice(dev);
 	if (err < 0)
 		goto err1;
@@ -753,6 +792,7 @@ static int gtp_newlink(struct net *src_net, struct net_device *dev,
 	return 0;
 err1:
 	pr_info("failed to register new netdev %d\n", err);
+	gtp_hashtable_free(gti);
 	return err;
 }
 
@@ -760,17 +800,57 @@ static void gtp_dellink(struct net_device *dev, struct list_head *head)
 {
 	struct gtp_instance *gti = netdev_priv(dev);
 
+	gtp_hashtable_free(gti);
 	dev_put(gti->real_dev);
 	list_del_rcu(&gti->list);
 	unregister_netdevice_queue(dev, head);
 }
 
+static const struct nla_policy gtp_policy[IFLA_GTP_MAX + 1] = {
+	[IFLA_GTP_LOCAL_ADDR_IPV4]	= { .type = NLA_U32 },
+	[IFLA_GTP_HASHSIZE]		= { .type = NLA_U32 },
+};
+
+static int gtp_validate(struct nlattr *tb[], struct nlattr *data[])
+{
+	if (!data || !data[IFLA_GTP_LOCAL_ADDR_IPV4])
+		return -EINVAL;
+
+	return 0;
+}
+
+static size_t gtp_get_size(const struct net_device *dev)
+{
+	return nla_total_size(sizeof(__u32)) +	/* IFLA_GTP_LOCAL_ADDR_IPV4 */
+	       nla_total_size(sizeof(__u32));	/* IFLA_GTP_HASHSIZE */
+}
+
+static int gtp_fill_info(struct sk_buff *skb, const struct net_device *dev)
+{
+	struct gtp_instance *gti = netdev_priv(dev);
+
+	if (nla_put_u32(skb, IFLA_GTP_LOCAL_ADDR_IPV4,
+			gti->gtp0_addr.sin_addr.s_addr) ||
+	    nla_put_u32(skb, IFLA_GTP_HASHSIZE, gti->hash_size))
+		goto nla_put_failure;
+
+	return 0;
+
+nla_put_failure:
+	return -EMSGSIZE;
+}
+
 static struct rtnl_link_ops gtp_link_ops __read_mostly = {
 	.kind		= "gtp",
+	.maxtype	= IFLA_GTP_MAX,
+	.policy		= gtp_policy,
 	.priv_size	= sizeof(struct gtp_instance),
 	.setup		= gtp_link_setup,
+	.validate	= gtp_validate,
 	.newlink	= gtp_newlink,
 	.dellink	= gtp_dellink,
+	.get_size	= gtp_get_size,
+	.fill_info	= gtp_fill_info,
 };
 
 static int gtp_hashtable_new(struct gtp_instance *gti, int hsize)
@@ -855,6 +935,8 @@ static int gtp_create_bind_sock(struct gtp_instance *gti)
 	udp_sk(sk)->encap_rcv = gtp_udp_encap_recv;
 	sk->sk_user_data = gti;
 
+	pr_info("socket successfully binded\n");
+
 	return 0;
 
 out_free1:
@@ -888,84 +970,6 @@ static struct net_device *gtp_find_dev(int ifindex)
 			return gti->dev;
 	}
 	return NULL;
-}
-
-/* This configuration routine sets up the hashtable and it links the UDP
- * socket to the device.
- */
-static int gtp_genl_cfg_new(struct sk_buff *skb, struct genl_info *info)
-{
-	struct net_device *dev;
-	struct gtp_instance *gti;
-	int err;
-
-	if (!info->attrs[GTPA_LINK])
-		return -EINVAL;
-
-	/* Check if there's an existing gtpX device to configure */
-	dev = gtp_find_dev(nla_get_u32(info->attrs[GTPA_CFG_LINK]));
-	if (dev == NULL)
-		return -ENODEV;
-
-	gti = netdev_priv(dev);
-
-	/* Create the UDP socket if needed */
-	if (info->nlhdr->nlmsg_flags & NLM_F_CREATE) {
-		if (gti->socket_enabled)
-			return -EBUSY;
-
-		if (!info->attrs[GTPA_CFG_LOCAL_ADDR_IPV4])
-			return -EINVAL;
-
-		gti->gtp0_addr.sin_addr.s_addr =
-		gti->gtp1u_addr.sin_addr.s_addr =
-			nla_get_u32(info->attrs[GTPA_CFG_LOCAL_ADDR_IPV4]);
-
-		/* XXX fix hardcoded hashtable size */
-		err = gtp_hashtable_new(gti, 1024);
-		if (err < 0)
-			return err;
-
-		err = gtp_create_bind_sock(gti);
-		if (err < 0)
-			goto err1;
-
-		gti->socket_enabled = true;
-	} else {
-		/* XXX configuration updates not yet supported */
-		return -EOPNOTSUPP;
-	}
-
-	return 0;
-err1:
-	gtp_hashtable_free(gti);
-	return err;
-}
-
-static int gtp_genl_cfg_get(struct sk_buff *skb, struct genl_info *info)
-{
-	/* XXX */
-	return 0;
-}
-
-static int gtp_genl_cfg_delete(struct sk_buff *skb, struct genl_info *info)
-{
-	struct net_device *dev;
-	struct gtp_instance *gti;
-
-	if (!info->attrs[GTPA_LINK])
-		return -EINVAL;
-
-	/* Check if there's an existing gtpX device to configure */
-	dev = gtp_find_dev(nla_get_u32(info->attrs[GTPA_CFG_LINK]));
-	if (dev == NULL)
-		return -ENODEV;
-
-	gti = netdev_priv(dev);
-	gtp_destroy_bind_sock(gti);
-	gtp_hashtable_free(gti);
-
-	return 0;
 }
 
 static int ipv4_pdp_add(struct gtp_instance *gti, struct genl_info *info)
@@ -1059,9 +1063,6 @@ static int gtp_genl_tunnel_new(struct sk_buff *skb, struct genl_info *info)
 		return -ENODEV;
 
 	gti = netdev_priv(dev);
-
-	if (!gti->socket_enabled)
-		return -ENETDOWN;
 
 	return ipv4_pdp_add(gti, info);
 }
@@ -1237,24 +1238,6 @@ static struct nla_policy gtp_genl_policy[GTPA_MAX + 1] = {
 
 static const struct genl_ops gtp_genl_ops[] = {
 	{
-		.cmd = GTP_CMD_CFG_NEW,
-		.doit = gtp_genl_cfg_new,
-		.policy = gtp_genl_policy,
-		.flags = GENL_ADMIN_PERM,
-	},
-	{
-		.cmd = GTP_CMD_CFG_DELETE,
-		.doit = gtp_genl_cfg_delete,
-		.policy = gtp_genl_policy,
-		.flags = GENL_ADMIN_PERM,
-	},
-	{
-		.cmd = GTP_CMD_CFG_GET,
-		.doit = gtp_genl_cfg_get,
-		.policy = gtp_genl_policy,
-		.flags = GENL_ADMIN_PERM,
-	},
-	{
 		.cmd = GTP_CMD_TUNNEL_NEW,
 		.doit = gtp_genl_tunnel_new,
 		.policy = gtp_genl_policy,
@@ -1279,6 +1262,10 @@ static int __init gtp_init(void)
 {
 	int err;
 
+	gtp_wq = alloc_workqueue("gtp", 0, 0);
+	if (!gtp_wq)
+		return -ENOMEM;
+
 	get_random_bytes(&gtp_h_initval, sizeof(gtp_h_initval));
 
 	err = genl_register_family_with_ops(&gtp_genl_family, gtp_genl_ops);
@@ -1300,15 +1287,9 @@ err1:
 
 static void __exit gtp_fini(void)
 {
-	struct gtp_instance *gti;
-
-	list_for_each_entry_rcu(gti, &gtp_instance_list, list) {
-		pr_info("delete instance gtp %p\n", gti);
-		gtp_destroy_bind_sock(gti);
-		gtp_hashtable_free(gti);
-	}
 	rtnl_link_unregister(&gtp_link_ops);
 	genl_unregister_family(&gtp_genl_family);
+	destroy_workqueue(gtp_wq);
 
 	pr_info("GTP module unloaded\n");
 }
