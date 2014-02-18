@@ -545,18 +545,23 @@ static int gtp_ip4_prepare_xmit(struct sk_buff *skb, struct net_device *dev,
 		goto err_rt;
 	}
 
-	memset(&(IPCB(skb)->opt), 0, sizeof(IPCB(skb)->opt));
-	IPCB(skb)->flags &= ~(IPSKB_XFRM_TUNNEL_SIZE | IPSKB_XFRM_TRANSFORMED |
-			      IPSKB_REROUTED);
 	skb_dst_drop(skb);
 	skb_dst_set(skb, &rt->dst);
 
+	/* This is similar to tnl_update_pmtu() */
 	df = iph->frag_off;
-	if (df)
-		// XXX: tunnel->hlen: it depends on GTP0 / GTP1
-		mtu = dst_mtu(&rt->dst) - dev->hard_header_len -
-			sizeof(struct udphdr) - sizeof(struct gtp0_header);
-	else
+	if (df) {
+		mtu = dst_mtu(&rt->dst) - gti->real_dev->hard_header_len -
+			sizeof(struct iphdr) - sizeof(struct udphdr);
+		switch (pctx->gtp_version) {
+		case GTP_V0:
+			mtu -= sizeof(struct gtp0_header);
+			break;
+		case GTP_V1:
+			mtu -= sizeof(struct gtp1_header);
+			break;
+		}
+	} else
 		mtu = skb_dst(skb) ? dst_mtu(skb_dst(skb)) : dev->mtu;
 
 	if (skb_dst(skb))
