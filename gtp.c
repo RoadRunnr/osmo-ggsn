@@ -261,6 +261,17 @@ out:
 	return -1;
 }
 
+static u8 gtp1u_header_len[] = {
+	[0]					= 0,	/* 0 */
+	[GTP1_F_SEQ]				= 2,	/* 2 */
+	[GTP1_F_NPDU]				= 1,	/* 1 */
+	[GTP1_F_SEQ|GTP1_F_NPDU]		= 3,	/* 2 + 1 */
+	[GTP1_F_EXTHDR]				= 1,	/* 1 */
+	[GTP1_F_EXTHDR|GTP1_F_SEQ]		= 3,	/* 1 + 2 */
+	[GTP1_F_EXTHDR|GTP1_F_NPDU]		= 2,	/* 1 + 1 */
+	[GTP1_F_EXTHDR|GTP1_F_NPDU|GTP1_F_SEQ]	= 4,	/* 1 + 1 + 2 */
+};
+
 static int gtp1u_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 {
 	struct gtp1_header *gtp1;
@@ -279,20 +290,8 @@ static int gtp1u_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 	if ((gtp1->flags >> 5) != GTP_V1)
 		goto out;
 
-	/* FIXME: a look-up table might be faster than computing the
-	 * length iteratively */
-
-	/* sequence number present */
-	if (gtp1->flags & GTP1_F_SEQ)
-		gtp1_hdrlen += 2;
-
-	/* N-PDU number present */
-	if (gtp1->flags & GTP1_F_NPDU)
-		gtp1_hdrlen++;
-
-	/* next extension header type present */
-	if (gtp1->flags & GTP1_F_EXTHDR)
-		gtp1_hdrlen++;
+	/* look-up table for faster length computing */
+	gtp1_hdrlen = gtp1u_header_len[gtp1->flags & GTP1_F_MASK];
 
 	/* check if it is T-PDU. */
 	if (gtp1->type != GTP_TPDU)
