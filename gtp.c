@@ -567,10 +567,9 @@ static int gtp_ip4_prepare_xmit(struct sk_buff *skb, struct net_device *dev,
 	if (skb_dst(skb))
 		skb_dst(skb)->ops->update_pmtu(skb_dst(skb), NULL, skb, mtu);
 
-	df |= (iph->frag_off & htons(IP_DF));
-
-	if ((iph->frag_off & htons(IP_DF)) &&
+	if (!skb_is_gso(skb) && (iph->frag_off & htons(IP_DF)) &&
 	    mtu < ntohs(iph->tot_len)) {
+		memset(IPCB(skb), 0, sizeof(*IPCB(skb)));
 		icmp_send(skb, ICMP_DEST_UNREACH, ICMP_FRAG_NEEDED,
 			  htonl(mtu));
 		goto err_rt;
