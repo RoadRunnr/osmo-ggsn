@@ -508,7 +508,6 @@ static int gtp_ip4_prepare_xmit(struct sk_buff *skb, struct net_device *dev,
 {
 	struct gtp_instance *gti = netdev_priv(dev);
 	struct inet_sock *inet = inet_sk(gti->sock0->sk);
-	struct net_device *tdev;
 	struct iphdr *iph;
 	struct pdp_ctx *pctx;
 	struct rtable *rt;
@@ -521,11 +520,10 @@ static int gtp_ip4_prepare_xmit(struct sk_buff *skb, struct net_device *dev,
 	iph = ip_hdr(skb);
 	pctx = ipv4_pdp_find(gti, iph->daddr);
 	if (!pctx) {
-		pr_info("no pdp ctx found, skipping\n");
-		return -1;
+		netdev_dbg(dev, "no PDP context, skipping\n");
+		return -ENOENT;
 	}
-
-	pr_info("found pdp ctx %p\n", pctx);
+	netdev_dbg(dev, "found PDP context %p\n", pctx);
 
 	/* Obtain route for the new encapsulated GTP packet */
 	rt = ip4_route_output_gtp(dev_net(dev), &fl4,
@@ -533,15 +531,16 @@ static int gtp_ip4_prepare_xmit(struct sk_buff *skb, struct net_device *dev,
 				  inet->inet_saddr, 0,
 				  gti->real_dev->ifindex);
 	if (IS_ERR(rt)) {
-		pr_info("no rt found, skipping\n");
+		netdev_dbg(dev, "no route to SSGN %pI4\n",
+			   &pctx->sgsn_addr.ip4.s_addr);
 		dev->stats.tx_carrier_errors++;
 		goto err;
 	}
-	tdev = rt->dst.dev;
 
 	/* There is a routing loop */
-	if (tdev == dev) {
-		pr_info("rt loop, skipping\n");
+	if (rt->dst.dev == dev) {
+		netdev_dbg(dev, "circular route to SSGN %pI4\n",
+			   &pctx->sgsn_addr.ip4.s_addr);
 		dev->stats.collisions++;
 		goto err_rt;
 	}
@@ -578,7 +577,7 @@ static int gtp_ip4_prepare_xmit(struct sk_buff *skb, struct net_device *dev,
 err_rt:
 	ip_rt_put(rt);
 err:
-	return -1;
+	return -EBADMSG;
 }
 
 static int gtp_ip6_prepare_xmit(struct sk_buff *skb, struct net_device *dev,
