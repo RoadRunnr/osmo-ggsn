@@ -20,14 +20,18 @@ add_tunnel(int argc, char *argv[], int genl_id, struct mnl_socket *nl)
 	struct in_addr ms, sgsn;
 	struct nlmsghdr *nlh;
 	char buf[MNL_SOCKET_BUFFER_SIZE];
-	uint32_t seq = time(NULL);
+	uint32_t seq = time(NULL), gtp_version;
 
 	if (argc != 7) {
-		printf("%s add <gtp device> <version> <tid> <ms-addr> <sgsn-addr>\n",
+		printf("%s add <gtp device> <v0|v1> <tid> <ms-addr> <sgsn-addr>\n",
 			argv[0]);
 		return EXIT_FAILURE;
 	}
 	gtp_ifidx = if_nametoindex(argv[2]);
+	if (gtp_ifidx == 0) {
+		fprintf(stderr, "wrong GTP interface %s\n", argv[2]);
+		return EXIT_FAILURE;
+	}
 
 	if (inet_aton(argv[5], &ms) < 0) {
 		perror("bad address for ms");
@@ -39,10 +43,20 @@ add_tunnel(int argc, char *argv[], int genl_id, struct mnl_socket *nl)
 		exit(EXIT_FAILURE);
 	}
 
+	if (strcmp(argv[3], "v0") == 0)
+		gtp_version = GTP_V0;
+	else if (strcmp(argv[3], "v1") == 0)
+		gtp_version = GTP_V1;
+	else {
+		fprintf(stderr, "wrong GTP version %s, use v0 or v1\n",
+			argv[3]);
+		return EXIT_FAILURE;
+	}
+
 	nlh = genl_nlmsg_build_hdr(buf, genl_id, NLM_F_EXCL | NLM_F_ACK, ++seq,
 				   GTP_CMD_TUNNEL_NEW);
 	gtp_build_payload(nlh, atoi(argv[4]), gtp_ifidx, sgsn.s_addr,
-			  ms.s_addr, atoi(argv[3]));
+			  ms.s_addr, gtp_version);
 
 	if (genl_socket_talk(nl, nlh, seq, NULL, NULL) < 0)
 		perror("genl_socket_talk");
