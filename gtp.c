@@ -290,18 +290,16 @@ static int gtp1u_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 	if ((gtp1->flags >> 5) != GTP_V1)
 		goto out;
 
-	/* look-up table for faster length computing */
-	gtp1_hdrlen = gtp1u_header_len[gtp1->flags & GTP1_F_MASK];
-
 	/* check if it is T-PDU. */
 	if (gtp1->type != GTP_TPDU)
 		goto out;
 
-	/* check for sufficient header size */
-	if (!pskb_may_pull(skb, gtp1_hdrlen))
-		goto out;
+	/* look-up table for faster length computing */
+	gtp1_hdrlen = gtp1u_header_len[gtp1->flags & GTP1_F_MASK];
 
-	/* FIXME: actually take care of extension header chain */
+	/* check for sufficient header size */
+	if (gtp1_hdrlen && !pskb_may_pull(skb, gtp1_hdrlen))
+		goto out_rcu;
 
 	/* look-up the PDP context for the Tunnel ID */
 	rcu_read_lock();
@@ -310,7 +308,9 @@ static int gtp1u_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 		goto out_rcu;
 
 	/* get rid of the GTP header */
-	__skb_pull(skb, sizeof(*gtp1));
+	__skb_pull(skb, sizeof(*gtp1) + gtp1_hdrlen);
+
+	/* FIXME: actually take care of extension header chain */
 
 	if (!gtp_check_src_ms(skb, pctx))
 		goto out_rcu;
