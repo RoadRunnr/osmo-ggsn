@@ -612,7 +612,7 @@ gtp_push_ip4hdr(struct sk_buff *skb, struct gtp_pktinfo *pktinfo)
 
 	iph->version	=	4;
 	iph->ihl	=	sizeof(struct iphdr) >> 2;
-	iph->frag_off	=	pktinfo->iph->frag_off;
+	iph->frag_off	=	htons(IP_DF);
 	iph->protocol	=	IPPROTO_UDP;
 	iph->tos	=	pktinfo->iph->tos;
 	iph->daddr	=	pktinfo->fl4.daddr;
