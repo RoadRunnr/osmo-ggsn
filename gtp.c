@@ -462,10 +462,14 @@ gtp1_push_header(struct sk_buff *skb, struct pdp_ctx *pctx, int payload_len)
 	skb_cow(skb, sizeof(*gtp1) + IP_UDP_LEN);
 	gtp1 = (struct gtp1_header *) skb_push(skb, sizeof(*gtp1));
 
-	gtp1->flags = 0x10; /* V1, GTP-non-prime */
+	gtp1->flags = 0x20; /* V1, GTP-non-prime */
 	gtp1->type = GTP_TPDU;
 	gtp1->length = htons(payload_len);
 	gtp1->tid = htonl((u32)pctx->tid);
+
+	/* TODO: Suppport for extension header, sequence number and N-PDU.
+	 * 	 Update the length field if any of them is available.
+	 */
 }
 
 /* From Linux kernel 3.13: iptunnel_xmit_stats() */
