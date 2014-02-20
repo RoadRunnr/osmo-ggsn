@@ -227,6 +227,10 @@ static int gtp0_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 
 	pr_info("gtp0 udp received\n");
 
+	/* check for sufficient header size */
+	if (!pskb_may_pull(skb, sizeof(*gtp0)))
+		return -1;
+
 	gtp0 = (struct gtp0_header *)skb->data;
 
 	/* check for GTP Version 0 */
