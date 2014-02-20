@@ -48,9 +48,6 @@ struct pdp_ctx {
 		struct in_addr ip4;
 	} sgsn_addr;
 
-	/* user plane and control plane address of remote GSN */
-	struct sockaddr remote_c;
-	struct sockaddr remote_u;
 	u16 flow;
 	atomic_t tx_seq;
 
