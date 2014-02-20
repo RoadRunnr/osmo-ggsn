@@ -637,18 +637,11 @@ gtp_push_ip6hdr(struct sk_buff *skb, struct gtp_pktinfo *pktinfo)
 
 static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 {
-	struct gtp_instance *gti = netdev_priv(dev);
 	struct udphdr *uh;
 	unsigned int payload_len;
 	struct gtp_pktinfo pktinfo;
 	unsigned int proto = ntohs(skb->protocol);
 	int err;
-
-	/* UDP socket not initialized, skip */
-	if (!gti->sock0) {
-		pr_info("xmit: no socket / need cfg, skipping\n");
-		return NETDEV_TX_OK;
-	}
 
 	rcu_read_lock();
 	switch (proto) {
