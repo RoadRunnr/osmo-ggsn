@@ -223,7 +223,6 @@ static int gtp0_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 	struct gtp0_header *gtp0;
 	struct pdp_ctx *pctx;
 	int ret = 0;
-	u64 tid;
 
 	pr_info("gtp0 udp received\n");
 
@@ -241,11 +240,9 @@ static int gtp0_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 	if (gtp0->type != GTP_TPDU)
 		return 1;
 
-	/* look-up the PDP context for the Tunnel ID */
-	tid = be64_to_cpu(gtp0->tid);
-
 	rcu_read_lock();
-	pctx = gtp0_pdp_find(gti, tid);
+	/* look-up the PDP context for the Tunnel ID */
+	pctx = gtp0_pdp_find(gti, be64_to_cpu(gtp0->tid));
 	if (!pctx) {
 		ret = -1;
 		goto out_rcu;
