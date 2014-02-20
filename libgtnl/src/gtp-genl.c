@@ -6,56 +6,64 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <inttypes.h>
 
 #include <libmnl/libmnl.h>
 #include <linux/genetlink.h>
 
-#include "gtp_nl.h"
-#include "genl.h"
+#include <libgtpnl/gtpnl.h>
 
-static int
-add_tunnel(int argc, char *argv[], int genl_id, struct mnl_socket *nl)
+#include <net/if.h>
+#include <linux/gtp_nl.h>
+
+#include "internal.h"
+
+static void gtp_build_payload(struct nlmsghdr *nlh, uint64_t tid,
+			      uint32_t ifidx, uint32_t sgsn_addr,
+			      uint32_t ms_addr, uint32_t version)
+{
+	mnl_attr_put_u32(nlh, GTPA_VERSION, version);
+	mnl_attr_put_u32(nlh, GTPA_LINK, ifidx);
+	mnl_attr_put_u32(nlh, GTPA_SGSN_ADDRESS, sgsn_addr);
+	mnl_attr_put_u32(nlh, GTPA_MS_ADDRESS, ms_addr);
+	mnl_attr_put_u64(nlh, GTPA_TID, tid);
+}
+
+int gtp_add_tunnel(int genl_id, struct mnl_socket *nl, const char *ifname,
+		   const char *ms_addr, const char *sgsn_addr, uint64_t tid,
+		   int gtp_version)
 {
 	uint32_t gtp_ifidx;
 	struct in_addr ms, sgsn;
 	struct nlmsghdr *nlh;
 	char buf[MNL_SOCKET_BUFFER_SIZE];
-	uint32_t seq = time(NULL), gtp_version;
+	uint32_t seq = time(NULL);
 
-	if (argc != 7) {
-		printf("%s add <gtp device> <v0|v1> <tid> <ms-addr> <sgsn-addr>\n",
-			argv[0]);
-		return EXIT_FAILURE;
-	}
-	gtp_ifidx = if_nametoindex(argv[2]);
-	if (gtp_ifidx == 0) {
-		fprintf(stderr, "wrong GTP interface %s\n", argv[2]);
-		return EXIT_FAILURE;
+	gtp_ifidx = if_nametoindex(ifname);
+	if (gtp_ifidx == 0){
+		fprintf(stderr, "wrong GTP interface %s\n", ifname);
+		return -1;
 	}
 
-	if (inet_aton(argv[5], &ms) < 0) {
+	if (inet_aton(ms_addr, &ms) < 0) {
 		perror("bad address for ms");
-		exit(EXIT_FAILURE);
+		return -1;
 	}
 
-	if (inet_aton(argv[6], &sgsn) < 0) {
+	if (inet_aton(sgsn_addr, &sgsn) < 0) {
 		perror("bad address for sgsn");
-		exit(EXIT_FAILURE);
+		return -1;
 	}
 
-	if (strcmp(argv[3], "v0") == 0)
-		gtp_version = GTP_V0;
-	else if (strcmp(argv[3], "v1") == 0)
-		gtp_version = GTP_V1;
-	else {
-		fprintf(stderr, "wrong GTP version %s, use v0 or v1\n",
-			argv[3]);
-		return EXIT_FAILURE;
+	if (gtp_version > GTP_V1) {
+		fprintf(stderr, "wrong GTP version %u, use v0 or v1\n",
+			gtp_version);
+		return -1;
 	}
 
 	nlh = genl_nlmsg_build_hdr(buf, genl_id, NLM_F_EXCL | NLM_F_ACK, ++seq,
 				   GTP_CMD_TUNNEL_NEW);
-	gtp_build_payload(nlh, atoi(argv[4]), gtp_ifidx, sgsn.s_addr,
+	gtp_build_payload(nlh, tid, gtp_ifidx, sgsn.s_addr,
 			  ms.s_addr, gtp_version);
 
 	if (genl_socket_talk(nl, nlh, seq, NULL, NULL) < 0)
@@ -63,32 +71,28 @@ add_tunnel(int argc, char *argv[], int genl_id, struct mnl_socket *nl)
 
 	return 0;
 }
+EXPORT_SYMBOL(gtp_add_tunnel);
 
-static int
-del_tunnel(int argc, char *argv[], int genl_id, struct mnl_socket *nl)
+int gtp_del_tunnel(int genl_id, struct mnl_socket *nl, const char *ifname,
+		   uint64_t tid, uint32_t gtp_version)
 {
 	uint32_t gtp_ifidx;
 	char buf[MNL_SOCKET_BUFFER_SIZE];
 	struct nlmsghdr *nlh;
 	uint32_t seq = time(NULL);
 
-	if (argc != 5) {
-		printf("%s add <gtp device> <version> <tid>\n",
-			argv[0]);
-		return EXIT_FAILURE;
-	}
-
-	gtp_ifidx = if_nametoindex(argv[2]);
+	gtp_ifidx = if_nametoindex(ifname);
 
 	nlh = genl_nlmsg_build_hdr(buf, genl_id, NLM_F_ACK, ++seq,
 				   GTP_CMD_TUNNEL_DELETE);
-	gtp_build_payload(nlh, atoi(argv[4]), gtp_ifidx, 0, 0, atoi(argv[3]));
+	gtp_build_payload(nlh, tid, gtp_ifidx, 0, 0, gtp_version);
 
 	if (genl_socket_talk(nl, nlh, seq, NULL, NULL) < 0)
 		perror("genl_socket_talk");
 
 	return 0;
 }
+EXPORT_SYMBOL(gtp_del_tunnel);
 
 struct gtp_pdp {
 	uint32_t	version;
@@ -148,14 +152,13 @@ static int genl_gtp_attr_cb(const struct nlmsghdr *nlh, void *data)
 	}
 
 	printf("version %u ", pdp.version);
-	printf("tid %llu ms_addr %s ", pdp.tid, inet_ntoa(pdp.sgsn_addr));
+	printf("tid %"PRIu64" ms_addr %s ", pdp.tid, inet_ntoa(pdp.sgsn_addr));
 	printf("sgsn_addr %s\n", inet_ntoa(pdp.ms_addr));
 
 	return MNL_CB_OK;
 }
 
-static int
-list_tunnel(int argc, char *argv[], int genl_id, struct mnl_socket *nl)
+int gtp_list_tunnel(int genl_id, struct mnl_socket *nl)
 {
 	char buf[MNL_SOCKET_BUFFER_SIZE];
 	struct nlmsghdr *nlh;
@@ -171,44 +174,4 @@ list_tunnel(int argc, char *argv[], int genl_id, struct mnl_socket *nl)
 
 	return 0;
 }
-
-int main(int argc, char *argv[])
-{
-	struct mnl_socket *nl;
-	char buf[MNL_SOCKET_BUFFER_SIZE];
-	unsigned int portid;
-	int32_t genl_id;
-	int ret;
-
-	if (argc < 2) {
-		printf("%s <add|delete|list> [<options,...>]\n", argv[0]);
-		exit(EXIT_FAILURE);
-	}
-
-	nl = genl_socket_open();
-	if (nl == NULL) {
-		perror("mnl_socket_open");
-		exit(EXIT_FAILURE);
-	}
-
-	genl_id = genl_lookup_family(nl, "gtp");
-	if (genl_id < 0) {
-		printf("not found gtp genl family\n");
-		exit(EXIT_FAILURE);
-	}
-
-	if (strncmp(argv[1], "add", strlen(argv[1])) == 0)
-		ret = add_tunnel(argc, argv, genl_id, nl);
-	else if (strncmp(argv[1], "delete", strlen(argv[1])) == 0)
-		ret = del_tunnel(argc, argv, genl_id, nl);
-	else if (strncmp(argv[1], "list", strlen(argv[1])) == 0)
-		ret = list_tunnel(argc, argv, genl_id, nl);
-	else {
-		printf("Unknown command `%s'\n", argv[1]);
-		exit(EXIT_FAILURE);
-	}
-
-	mnl_socket_close(nl);
-
-	return ret;
-}
+EXPORT_SYMBOL(gtp_list_tunnel);
