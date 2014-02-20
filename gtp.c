@@ -1237,7 +1237,11 @@ static struct nla_policy gtp_genl_policy[GTPA_MAX + 1] = {
 	[GTPA_MS_ADDRESS]	= { .type = NLA_NESTED, },
 };
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 13, 0)
 static const struct genl_ops gtp_genl_ops[] = {
+#else
+static struct genl_ops gtp_genl_ops[] = {
+#endif
 	{
 		.cmd = GTP_CMD_TUNNEL_NEW,
 		.doit = gtp_genl_tunnel_new,
@@ -1269,10 +1273,17 @@ static int __init gtp_init(void)
 
 	get_random_bytes(&gtp_h_initval, sizeof(gtp_h_initval));
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 13, 0)
 	err = genl_register_family_with_ops(&gtp_genl_family, gtp_genl_ops);
 	if (err < 0)
 		return err;
-
+#else
+	err = genl_register_family_with_ops(&gtp_genl_family,
+					    gtp_genl_ops,
+					    ARRAY_SIZE(gtp_genl_ops));
+	if (err < 0)
+		return err;
+#endif
 	err = rtnl_link_register(&gtp_link_ops);
 	if (err < 0)
 		goto err1;
