@@ -744,9 +744,6 @@ static void gtp_link_setup(struct net_device *dev)
 {
 	struct gtp_instance *gti = netdev_priv(dev);
 
-	dev->priv_flags		&= ~(IFF_TX_SKB_SHARING);
-	dev->tx_queue_len	= 0;
-
 	dev->netdev_ops		= &gtp_netdev_ops;
 	dev->destructor		= free_netdev;
 
