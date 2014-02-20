@@ -217,10 +217,12 @@ static bool gtp_check_src_ms(struct sk_buff *skb, struct pdp_ctx *pctx)
 	return ret;
 }
 
+/* 1 means pass up to the stack, -1 means drop and 0 means decapsulated */
 static int gtp0_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 {
 	struct gtp0_header *gtp0;
 	struct pdp_ctx *pctx;
+	int ret = 0;
 	u64 tid;
 
 	pr_info("gtp0 udp received\n");
@@ -229,33 +231,31 @@ static int gtp0_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 
 	/* check for GTP Version 0 */
 	if ((gtp0->flags >> 5) != GTP_V0)
-		goto out;
+		return 1;
 
 	/* check if it is T-PDU. if not -> userspace */
 	if (gtp0->type != GTP_TPDU)
-		goto out;
+		return 1;
 
 	/* look-up the PDP context for the Tunnel ID */
 	tid = be64_to_cpu(gtp0->tid);
 
 	rcu_read_lock();
 	pctx = gtp0_pdp_find(gti, tid);
-	if (!pctx)
+	if (!pctx) {
+		ret = -1;
 		goto out_rcu;
+	}
 
 	/* get rid of the GTP header */
 	__skb_pull(skb, sizeof(*gtp0));
 
 	if (!gtp_check_src_ms(skb, pctx))
-		goto out_rcu;
-
-	rcu_read_unlock();
-	return 0;
+		ret = -1;
 
 out_rcu:
 	rcu_read_unlock();
-out:
-	return -1;
+	return ret;
 }
 
 static u8 gtp1u_header_len[] = {
@@ -274,35 +274,38 @@ static int gtp1u_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 	struct gtp1_header *gtp1;
 	struct pdp_ctx *pctx;
 	unsigned int gtp1_hdrlen = sizeof(*gtp1);
+	int ret = 0;
 
 	pr_info("gtp1 udp received\n");
 
 	/* check for sufficient header size */
 	if (!pskb_may_pull(skb, sizeof(*gtp1)))
-		goto out;
+		return -1;
 
 	gtp1 = (struct gtp1_header *)skb->data;
 
 	/* check for GTP Version 1 */
 	if ((gtp1->flags >> 5) != GTP_V1)
-		goto out;
+		return 1;
 
 	/* check if it is T-PDU. */
 	if (gtp1->type != GTP_TPDU)
-		goto out;
+		return 1;
 
 	/* look-up table for faster length computing */
 	gtp1_hdrlen = gtp1u_header_len[gtp1->flags & GTP1_F_MASK];
 
 	/* check for sufficient header size */
 	if (gtp1_hdrlen && !pskb_may_pull(skb, gtp1_hdrlen))
-		goto out_rcu;
+		return -1;
 
 	/* look-up the PDP context for the Tunnel ID */
 	rcu_read_lock();
 	pctx = gtp1_pdp_find(gti, ntohl(gtp1->tid));
-	if (!pctx)
+	if (!pctx) {
+		ret = -1;
 		goto out_rcu;
+	}
 
 	/* get rid of the GTP header */
 	__skb_pull(skb, sizeof(*gtp1) + gtp1_hdrlen);
@@ -310,15 +313,11 @@ static int gtp1u_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 	/* FIXME: actually take care of extension header chain */
 
 	if (!gtp_check_src_ms(skb, pctx))
-		goto out_rcu;
-
-	rcu_read_unlock();
-	return 0;
+		ret = -1;
 
 out_rcu:
 	rcu_read_unlock();
-out:
-	return -1;
+	return ret;
 }
 
 /* UDP encapsulation receive handler. See net/ipv4/udp.c.
@@ -355,9 +354,14 @@ static int gtp_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 		ret = -1; /* shouldn't happen */
 	}
 
-	/* Not a valid GTP packet, drop it. */
-	if (unlikely(ret < 0))
+	switch (ret) {
+	case 1: /* pass up to the stack */
+		goto user_put;
+	case 0:
+		break;
+	case -1:
 		goto drop;
+	}
 
 	/* Now that the UDP and the GTP header have been removed, set up the
 	 * new network header. This is required by the upper later to
