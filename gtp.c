@@ -630,6 +630,8 @@ gtp_push_ip4hdr(struct sk_buff *skb, struct gtp_pktinfo *pktinfo)
 	iph->daddr	=	pktinfo->fl4.daddr;
 	iph->saddr	=	pktinfo->fl4.saddr;
 	iph->ttl	=	ip4_dst_hoplimit(&pktinfo->rt->dst);
+	__ip_select_ident(iph, &pktinfo->rt->dst,
+			  (skb_shinfo(skb)->gso_segs ?: 1) - 1);
 
 	pr_info("gtp -> IP src: %pI4 dst: %pI4\n", &iph->saddr, &iph->daddr);
 }
