@@ -1303,6 +1303,7 @@ err1:
 	genl_unregister_family(&gtp_genl_family);
 	return err;
 }
+late_initcall(gtp_init);
 
 static void __exit gtp_fini(void)
 {
@@ -1312,8 +1313,6 @@ static void __exit gtp_fini(void)
 
 	pr_info("GTP module unloaded\n");
 }
-
-module_init(gtp_init);
 module_exit(gtp_fini);
 
 MODULE_LICENSE("GPL");
