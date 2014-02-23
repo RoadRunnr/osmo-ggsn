@@ -16,6 +16,8 @@
 #include <linux/rculist.h>
 #include <linux/jhash.h>
 #include <linux/if_tunnel.h>
+#include <linux/net.h>
+#include <linux/file.h>
 
 #include <net/protocol.h>
 #include <net/ip.h>
@@ -58,14 +60,9 @@ struct pdp_ctx {
 struct gtp_instance {
 	struct list_head list;
 
-	/* address for local UDP socket */
-	struct sockaddr_in gtp0_addr;
-	struct sockaddr_in gtp1u_addr;
-
 	/* the socket */
 	struct socket *sock0;
 	struct socket *sock1u;
-	struct work_struct sock_work;
 
 	struct net_device *dev;
 	struct net_device *real_dev;
@@ -405,19 +402,16 @@ static int gtp_dev_init(struct net_device *dev)
 	if (!dev->tstats)
 		return -ENOMEM;
 
-	/* create the socket outside of rtnl to avoid a possible deadlock */
-	queue_work(gtp_wq, &gti->sock_work);
-
 	return 0;
 }
 
-static void gtp_destroy_bind_sock(struct gtp_instance *gti);
+static void gtp_encap_disable(struct gtp_instance *gti);
 
 static void gtp_dev_uninit(struct net_device *dev)
 {
 	struct gtp_instance *gti = netdev_priv(dev);
 
-	gtp_destroy_bind_sock(gti);
+	gtp_encap_disable(gti);
 	free_percpu(dev->tstats);
 }
 
@@ -726,36 +720,22 @@ static const struct net_device_ops gtp_netdev_ops = {
 	.ndo_start_xmit		= gtp_dev_xmit,
 };
 
-static int gtp_create_bind_sock(struct gtp_instance *gti);
-
-/* Scheduled at device creation to bind to a socket */
-static void gtp_sock_work(struct work_struct *work)
-{
-	struct gtp_instance *gti =
-		container_of(work, struct gtp_instance, sock_work);
-
-	gtp_create_bind_sock(gti);
-}
-
 static void gtp_link_setup(struct net_device *dev)
 {
-	struct gtp_instance *gti = netdev_priv(dev);
-
 	dev->netdev_ops		= &gtp_netdev_ops;
 	dev->destructor		= free_netdev;
-
-	INIT_WORK(&gti->sock_work, gtp_sock_work);
 }
 
 static int gtp_hashtable_new(struct gtp_instance *gti, int hsize);
 static void gtp_hashtable_free(struct gtp_instance *gti);
+static int gtp_encap_enable(struct gtp_instance *gti, int fd_gtp0, int fd_gtp1);
 
 static int gtp_newlink(struct net *src_net, struct net_device *dev,
 			struct nlattr *tb[], struct nlattr *data[])
 {
 	struct net_device *real_dev;
 	struct gtp_instance *gti;
-	int hashsize, err;
+	int hashsize, err, fd0, fd1;
 
 	pr_info("gtp_newlink\n");
 
@@ -776,9 +756,10 @@ static int gtp_newlink(struct net *src_net, struct net_device *dev,
 	gti = netdev_priv(dev);
 	gti->real_dev = real_dev;
 
-	gti->gtp0_addr.sin_addr.s_addr =
-	gti->gtp1u_addr.sin_addr.s_addr =
-		nla_get_u32(data[IFLA_GTP_LOCAL_ADDR_IPV4]);
+	fd0 = nla_get_u32(data[IFLA_GTP_FD0]);
+	fd1 = nla_get_u32(data[IFLA_GTP_FD1]);
+
+	gtp_encap_enable(gti, fd0, fd1);
 
 	if (!data[IFLA_GTP_HASHSIZE])
 		hashsize = 1024;
@@ -808,6 +789,7 @@ static void gtp_dellink(struct net_device *dev, struct list_head *head)
 {
 	struct gtp_instance *gti = netdev_priv(dev);
 
+	gtp_encap_disable(gti);
 	gtp_hashtable_free(gti);
 	dev_put(gti->real_dev);
 	list_del_rcu(&gti->list);
@@ -815,13 +797,14 @@ static void gtp_dellink(struct net_device *dev, struct list_head *head)
 }
 
 static const struct nla_policy gtp_policy[IFLA_GTP_MAX + 1] = {
-	[IFLA_GTP_LOCAL_ADDR_IPV4]	= { .type = NLA_U32 },
+	[IFLA_GTP_FD0]			= { .type = NLA_U32 },
+	[IFLA_GTP_FD1]			= { .type = NLA_U32 },
 	[IFLA_GTP_HASHSIZE]		= { .type = NLA_U32 },
 };
 
 static int gtp_validate(struct nlattr *tb[], struct nlattr *data[])
 {
-	if (!data || !data[IFLA_GTP_LOCAL_ADDR_IPV4])
+	if (!data || !data[IFLA_GTP_FD0] || !data[IFLA_GTP_FD1])
 		return -EINVAL;
 
 	return 0;
@@ -829,17 +812,14 @@ static int gtp_validate(struct nlattr *tb[], struct nlattr *data[])
 
 static size_t gtp_get_size(const struct net_device *dev)
 {
-	return nla_total_size(sizeof(__u32)) +	/* IFLA_GTP_LOCAL_ADDR_IPV4 */
-	       nla_total_size(sizeof(__u32));	/* IFLA_GTP_HASHSIZE */
+	return nla_total_size(sizeof(__u32));	/* IFLA_GTP_HASHSIZE */
 }
 
 static int gtp_fill_info(struct sk_buff *skb, const struct net_device *dev)
 {
 	struct gtp_instance *gti = netdev_priv(dev);
 
-	if (nla_put_u32(skb, IFLA_GTP_LOCAL_ADDR_IPV4,
-			gti->gtp0_addr.sin_addr.s_addr) ||
-	    nla_put_u32(skb, IFLA_GTP_HASHSIZE, gti->hash_size))
+	if (nla_put_u32(skb, IFLA_GTP_HASHSIZE, gti->hash_size))
 		goto nla_put_failure;
 
 	return 0;
@@ -902,23 +882,39 @@ static void gtp_hashtable_free(struct gtp_instance *gti)
 	kfree(gti->tid_hash);
 }
 
-static int gtp_create_bind_sock(struct gtp_instance *gti)
+static int gtp_encap_enable(struct gtp_instance *gti, int fd_gtp0, int fd_gtp1)
 {
-	int rc;
-	struct sockaddr_in sin;
+	int err;
+	struct socket *sock0, *sock1u;
 	struct sock *sk;
 
-	/* Create and bind the socket for GTP0 */
-	rc = sock_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP, &gti->sock0);
-	if (rc < 0)
-		goto out;
+	sock0 = sockfd_lookup(fd_gtp0, &err);
+	if (sock0 == NULL) {
+		pr_err("socket fd=%d not found (gtp0)\n", fd_gtp0);
+		return -ENOENT;
+	}
 
-	memset(&sin, 0, sizeof(sin));
-	sin.sin_family = AF_INET;
-	sin.sin_port = htons(GTP0_PORT);
-	rc = kernel_bind(gti->sock0, (struct sockaddr *) &sin, sizeof(sin));
-	if (rc < 0)
-		goto out;
+	if (sock0->sk->sk_protocol != IPPROTO_UDP) {
+		pr_err("socket fd=%d not UDP\n", fd_gtp0);
+		err = -EINVAL;
+		goto err1;
+	}
+
+	sock1u = sockfd_lookup(fd_gtp1, &err);
+	if (sock1u == NULL) {
+		pr_err("socket fd=%d not found (gtp1u)\n", fd_gtp1);
+		err = -ENOENT;
+		goto err1;
+	}
+
+	if (sock1u->sk->sk_protocol != IPPROTO_UDP) {
+		pr_err("socket fd=%d not UDP\n", fd_gtp1);
+		err = -EINVAL;
+		goto err2;
+	}
+
+	gti->sock0 = sock0;
+	gti->sock1u = sock1u;
 
 	sk = gti->sock0->sk;
 	udp_sk(sk)->encap_type = UDP_ENCAP_GTP0;
@@ -926,47 +922,27 @@ static int gtp_create_bind_sock(struct gtp_instance *gti)
 	sk->sk_user_data = gti;
 	udp_encap_enable();
 
-	/* Create and bind the socket for GTP1 user-plane */
-	rc = sock_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP, &gti->sock1u);
-	if (rc < 0)
-		goto out_free0;
-
-	memset(&sin, 0, sizeof(sin));
-	sin.sin_family = AF_INET;
-	sin.sin_port = htons(GTP1U_PORT);
-	rc = kernel_bind(gti->sock1u, (struct sockaddr *) &sin, sizeof(sin));
-	if (rc < 0)
-		goto out_free1;
-
 	sk = gti->sock1u->sk;
 	udp_sk(sk)->encap_type = UDP_ENCAP_GTP1U;
 	udp_sk(sk)->encap_rcv = gtp_udp_encap_recv;
 	sk->sk_user_data = gti;
 
-	pr_info("socket successfully binded\n");
+	pr_info("encapsulation socket enabled\n");
 
 	return 0;
-
-out_free1:
-	kernel_sock_shutdown(gti->sock1u, SHUT_RDWR);
-	sk_release_kernel(gti->sock1u->sk);
-out_free0:
-	kernel_sock_shutdown(gti->sock0, SHUT_RDWR);
-	sk_release_kernel(gti->sock0->sk);
-out:
-	return rc;
+err1:
+	sockfd_put(sock0);
+err2:
+	sockfd_put(sock1u);
+	return err;
 }
 
-static void gtp_destroy_bind_sock(struct gtp_instance *gti)
+static void gtp_encap_disable(struct gtp_instance *gti)
 {
-	if (gti->sock1u) {
-		kernel_sock_shutdown(gti->sock1u, SHUT_RDWR);
-		sk_release_kernel(gti->sock1u->sk);
-	}
-	if (gti->sock0) {
-		kernel_sock_shutdown(gti->sock0, SHUT_RDWR);
-		sk_release_kernel(gti->sock0->sk);
-	}
+	if (gti->sock1u)
+		sockfd_put(gti->sock1u);
+	if (gti->sock0)
+		sockfd_put(gti->sock0);
 }
 
 static struct net_device *gtp_find_dev(int ifindex)
