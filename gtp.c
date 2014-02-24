@@ -30,7 +30,6 @@
 #include "gtp_nl.h"
 
 static u32 gtp_h_initval;
-static struct workqueue_struct *gtp_wq;
 
 struct pdp_ctx {
 	struct hlist_node hlist_tid;
@@ -1250,10 +1249,6 @@ static int __init gtp_init(void)
 {
 	int err;
 
-	gtp_wq = alloc_workqueue("gtp", 0, 0);
-	if (!gtp_wq)
-		return -ENOMEM;
-
 	get_random_bytes(&gtp_h_initval, sizeof(gtp_h_initval));
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 13, 0)
@@ -1285,7 +1280,6 @@ static void __exit gtp_fini(void)
 {
 	rtnl_link_unregister(&gtp_link_ops);
 	genl_unregister_family(&gtp_genl_family);
-	destroy_workqueue(gtp_wq);
 
 	pr_info("GTP module unloaded\n");
 }
