@@ -632,7 +632,7 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	unsigned int payload_len;
 	struct gtp_pktinfo pktinfo;
 	unsigned int proto = ntohs(skb->protocol);
-	int err;
+	int gtph_len, err;
 
 	rcu_read_lock();
 	switch (proto) {
@@ -668,13 +668,15 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	switch (pktinfo.pctx->gtp_version) {
 	case GTP_V0:
 		uh->source = uh->dest = htons(GTP0_PORT);
+		gtph_len = sizeof(struct gtp0_header);
 		break;
 	case GTP_V1:
 		uh->source = uh->dest = htons(GTP1U_PORT);
+		gtph_len = sizeof(struct gtp1_header);
 		break;
 	}
 
-	uh->len = htons(sizeof(struct udphdr) + payload_len);
+	uh->len = htons(sizeof(struct udphdr) + payload_len + gtph_len);
 	uh->check = 0;
 
 	pr_info("gtp -> UDP src: %u dst: %u (len %u)\n",
