@@ -260,17 +260,6 @@ out_rcu:
 	return ret;
 }
 
-static u8 gtp1u_header_len[] = {
-	[0]					= 0,	/* 0 */
-	[GTP1_F_SEQ]				= 2,	/* 2 */
-	[GTP1_F_NPDU]				= 1,	/* 1 */
-	[GTP1_F_SEQ|GTP1_F_NPDU]		= 3,	/* 2 + 1 */
-	[GTP1_F_EXTHDR]				= 1,	/* 1 */
-	[GTP1_F_EXTHDR|GTP1_F_SEQ]		= 3,	/* 1 + 2 */
-	[GTP1_F_EXTHDR|GTP1_F_NPDU]		= 2,	/* 1 + 1 */
-	[GTP1_F_EXTHDR|GTP1_F_NPDU|GTP1_F_SEQ]	= 4,	/* 1 + 1 + 2 */
-};
-
 static int gtp1u_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 {
 	struct gtp1_header *gtp1;
@@ -294,8 +283,14 @@ static int gtp1u_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 	if (gtp1->type != GTP_TPDU)
 		return 1;
 
-	/* look-up table for faster length computing */
-	hdrlen += gtp1u_header_len[gtp1->flags & GTP1_F_MASK];
+	/* From 29.060: "This field shall be present if and only if any one or
+	 * more of the S, PN and E flags are set.".
+	 *
+	 * If any of the bit is set, then the remaining ones also have to be
+	 * set.
+	 */
+	if (gtp1->flags & GTP1_F_MASK)
+		hdrlen += 4;
 
 	/* check for sufficient header size for extension */
 	if (!pskb_may_pull(skb, hdrlen))
