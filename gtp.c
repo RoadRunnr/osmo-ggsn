@@ -186,26 +186,29 @@ static inline struct gtp_instance *sk_to_gti(struct sock *sk)
 /* Check if the inner IP header has the source address assigned to the
  * current MS.
  */
-static bool gtp_check_src_ms(struct sk_buff *skb, struct pdp_ctx *pctx)
+static bool gtp_check_src_ms(struct sk_buff *skb, struct pdp_ctx *pctx,
+			     unsigned int hdrlen)
 {
 	bool ret = false;
 
 	if (skb->protocol == ntohs(ETH_P_IP)) {
 		struct iphdr *iph;
 
-		if (!pskb_may_pull(skb, sizeof(struct iphdr)))
+		if (!pskb_may_pull(skb, hdrlen + sizeof(struct iphdr)))
 			return false;
 
-		iph = (struct iphdr *)skb->data;
+		iph = (struct iphdr *)
+			(skb->data + hdrlen + sizeof(struct iphdr));
 		ret = (iph->saddr != pctx->ms_addr.ip4.s_addr);
 
 	} else if (skb->protocol == ntohs(ETH_P_IPV6)) {
 		struct ipv6hdr *ip6h;
 
-		if (!pskb_may_pull(skb, sizeof(struct ipv6hdr)))
+		if (!pskb_may_pull(skb, hdrlen + sizeof(struct ipv6hdr)))
 			return false;
 
-		ip6h = (struct ipv6hdr *)skb->data;
+		ip6h = (struct ipv6hdr *)
+			(skb->data + hdrlen + sizeof(struct ipv6hdr));
 		ret = memcmp(&ip6h->saddr, &pctx->ms_addr.ip6,
 			     sizeof(struct in6_addr)) == 0;
 	}
@@ -218,15 +221,16 @@ static int gtp0_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 {
 	struct gtp0_header *gtp0;
 	struct pdp_ctx *pctx;
+	unsigned int hdrlen = sizeof(struct udphdr) + sizeof(*gtp0);
 	int ret = 0;
 
 	pr_info("gtp0 udp received\n");
 
 	/* check for sufficient header size */
-	if (!pskb_may_pull(skb, sizeof(*gtp0)))
+	if (!pskb_may_pull(skb, hdrlen))
 		return -1;
 
-	gtp0 = (struct gtp0_header *)skb->data;
+	gtp0 = (struct gtp0_header *)(skb->data + sizeof(struct udphdr));
 
 	/* check for GTP Version 0 */
 	if ((gtp0->flags >> 5) != GTP_V0)
@@ -244,12 +248,13 @@ static int gtp0_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 		goto out_rcu;
 	}
 
-	/* get rid of the GTP header */
-	__skb_pull(skb, sizeof(*gtp0));
-
-	if (!gtp_check_src_ms(skb, pctx))
+	if (!gtp_check_src_ms(skb, pctx, hdrlen)) {
 		ret = -1;
+		goto out_rcu;
+	}
 
+	/* get rid of the GTP + UDP headers */
+	__skb_pull(skb, hdrlen);
 out_rcu:
 	rcu_read_unlock();
 	return ret;
@@ -270,16 +275,16 @@ static int gtp1u_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 {
 	struct gtp1_header *gtp1;
 	struct pdp_ctx *pctx;
-	unsigned int gtp1_hdrlen = sizeof(*gtp1);
+	unsigned int hdrlen = sizeof(struct udphdr) + sizeof(*gtp1);
 	int ret = 0;
 
 	pr_info("gtp1 udp received\n");
 
 	/* check for sufficient header size */
-	if (!pskb_may_pull(skb, sizeof(*gtp1)))
+	if (!pskb_may_pull(skb, hdrlen))
 		return -1;
 
-	gtp1 = (struct gtp1_header *)skb->data;
+	gtp1 = (struct gtp1_header *)(skb->data + sizeof(struct udphdr));
 
 	/* check for GTP Version 1 */
 	if ((gtp1->flags >> 5) != GTP_V1)
@@ -290,10 +295,10 @@ static int gtp1u_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 		return 1;
 
 	/* look-up table for faster length computing */
-	gtp1_hdrlen = gtp1u_header_len[gtp1->flags & GTP1_F_MASK];
+	hdrlen += gtp1u_header_len[gtp1->flags & GTP1_F_MASK];
 
-	/* check for sufficient header size */
-	if (gtp1_hdrlen && !pskb_may_pull(skb, gtp1_hdrlen))
+	/* check for sufficient header size for extension */
+	if (!pskb_may_pull(skb, hdrlen))
 		return -1;
 
 	/* look-up the PDP context for the Tunnel ID */
@@ -304,14 +309,13 @@ static int gtp1u_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 		goto out_rcu;
 	}
 
-	/* get rid of the GTP header */
-	__skb_pull(skb, sizeof(*gtp1) + gtp1_hdrlen);
-
-	/* FIXME: actually take care of extension header chain */
-
-	if (!gtp_check_src_ms(skb, pctx))
+	if (!gtp_check_src_ms(skb, pctx, hdrlen)) {
 		ret = -1;
+		goto out_rcu;
+	}
 
+	/* get rid of the UDP + GTP header + extensions */
+	__skb_pull(skb, hdrlen);
 out_rcu:
 	rcu_read_unlock();
 	return ret;
@@ -331,14 +335,6 @@ static int gtp_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	gti = sk_to_gti(sk);
 	if (!gti)
 		goto user;
-
-	/* UDP verifies the packet length, but this may be fragmented, so make
-	 * sure the UDP header is linear.
-	 */
-	if (!pskb_may_pull(skb, sizeof(struct udphdr)))
-		goto user_put;
-
-	__skb_pull(skb, sizeof(struct udphdr));
 
 	switch (udp_sk(sk)->encap_type) {
 	case UDP_ENCAP_GTP0:
