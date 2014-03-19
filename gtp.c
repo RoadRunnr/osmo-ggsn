@@ -1100,34 +1100,6 @@ static int gtp_genl_tunnel_delete(struct sk_buff *skb, struct genl_info *info)
 	return 0;
 }
 
-static int gtp_genl_tunnel_get(struct sk_buff *skb, struct genl_info *info)
-{
-	struct net_device *dev;
-	struct gtp_instance *gti;
-
-	pr_info("get tunnel\n");
-
-	if (!info->attrs[GTPA_VERSION] ||
-	    !info->attrs[GTPA_LINK])
-		return -EINVAL;
-
-	/* Check if there's an existing gtpX device to configure */
-	dev = gtp_find_dev(nla_get_u32(info->attrs[GTPA_LINK]));
-	if (dev == NULL)
-		return -ENODEV;
-
-	gti = netdev_priv(dev);
-
-	if (info->attrs[GTPA_TID])
-		pr_info("by tid\n");
-	else if (info->attrs[GTPA_MS_ADDRESS])
-		pr_info("by ms\n");
-	else
-		return -EINVAL;
-
-	return 0;
-}
-
 static struct genl_family gtp_genl_family = {
 	.id		= GENL_ID_GENERATE,
 	.name		= "gtp",
@@ -1160,7 +1132,87 @@ gtp_genl_fill_info(struct sk_buff *skb, u32 snd_portid, u32 snd_seq,
 
 nlmsg_failure:
 nla_put_failure:
+	genlmsg_cancel(skb, genlh);
 	return -EMSGSIZE;
+}
+
+static int gtp_genl_tunnel_get(struct sk_buff *skb, struct genl_info *info)
+{
+	struct net_device *dev;
+	struct gtp_instance *gti;
+	struct pdp_ctx *pctx = NULL;
+	struct sk_buff *skb2;
+	u32 gtp_version;
+	int err;
+
+	if (!info->attrs[GTPA_VERSION] ||
+	    !info->attrs[GTPA_LINK])
+		return -EINVAL;
+
+	gtp_version = nla_get_u32(info->attrs[GTPA_VERSION]);
+	switch (gtp_version) {
+	case GTP_V0:
+	case GTP_V1:
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	/* Check if there's an existing gtpX device to configure */
+	dev = gtp_find_dev(nla_get_u32(info->attrs[GTPA_LINK]));
+	if (dev == NULL)
+		return -ENODEV;
+
+	gti = netdev_priv(dev);
+
+	rcu_read_lock();
+	if (info->attrs[GTPA_TID]) {
+		u64 tid = nla_get_u64(info->attrs[GTPA_TID]);
+
+		/* GTPv1 allows 32-bits tunnel IDs */
+		if (gtp_version == GTP_V1 && tid > UINT_MAX) {
+			err = -EINVAL;
+			goto err_unlock;
+		}
+
+		switch (gtp_version) {
+		case GTP_V0:
+			pctx = gtp0_pdp_find(gti, tid);
+			break;
+		case GTP_V1:
+			pctx = gtp1_pdp_find(gti, tid);
+			break;
+		}
+	} else if (info->attrs[GTPA_MS_ADDRESS]) {
+		u32 ip = nla_get_u32(info->attrs[GTPA_MS_ADDRESS]);
+
+		pctx = ipv4_pdp_find(gti, ip);
+	}
+
+	if (pctx == NULL) {
+		err = -ENOENT;
+		goto err_unlock;
+	}
+
+	skb2 = genlmsg_new(NLMSG_GOODSIZE, GFP_ATOMIC);
+	if (skb2 == NULL) {
+		err = -ENOMEM;
+		goto err_unlock;
+	}
+
+	err = gtp_genl_fill_info(skb2, NETLINK_CB(skb).portid,
+				 info->snd_seq, info->nlhdr->nlmsg_type, pctx);
+	if (err < 0)
+		goto err_unlock_free;
+
+	rcu_read_unlock();
+	return genlmsg_unicast(genl_info_net(info), skb2, info->snd_portid);
+
+err_unlock_free:
+	kfree_skb(skb2);
+err_unlock:
+	rcu_read_unlock();
+	return err;
 }
 
 static int
