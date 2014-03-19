@@ -137,8 +137,6 @@ static struct pdp_ctx *ipv4_pdp_find(struct gtp_instance *gti,
 	head = &gti->addr_hash[ipv4_hashfn(ms_addr) % gti->hash_size];
 
 	hlist_for_each_entry_rcu(pdp, head, hlist_addr) {
-		pr_info("af %u : pdp->ms %pI4 == ms %pI4\n",
-			pdp->af, &pdp->ms_addr.ip4, &ms_addr);
 		if (pdp->af == AF_INET && pdp->ms_addr.ip4.s_addr == ms_addr)
 			return pdp;
 	}
@@ -224,8 +222,6 @@ static int gtp0_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 	unsigned int hdrlen = sizeof(struct udphdr) + sizeof(*gtp0);
 	int ret = 0;
 
-	pr_info("gtp0 udp received\n");
-
 	/* check for sufficient header size */
 	if (!pskb_may_pull(skb, hdrlen))
 		return -1;
@@ -266,8 +262,6 @@ static int gtp1u_udp_encap_recv(struct gtp_instance *gti, struct sk_buff *skb)
 	struct pdp_ctx *pctx;
 	unsigned int hdrlen = sizeof(struct udphdr) + sizeof(*gtp1);
 	int ret = 0;
-
-	pr_info("gtp1 udp received\n");
 
 	/* check for sufficient header size */
 	if (!pskb_may_pull(skb, hdrlen))
@@ -324,8 +318,6 @@ static int gtp_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	struct gtp_instance *gti;
 	int ret;
 
-	pr_info("gtp udp received\n");
-
 	/* resolve the GTP instance to which the socket belongs */
 	gti = sk_to_gti(sk);
 	if (!gti)
@@ -333,9 +325,11 @@ static int gtp_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 
 	switch (udp_sk(sk)->encap_type) {
 	case UDP_ENCAP_GTP0:
+		netdev_dbg(gti->dev, "received GTP0 packet\n");
 		ret = gtp0_udp_encap_recv(gti, skb);
 		break;
 	case UDP_ENCAP_GTP1U:
+		netdev_dbg(gti->dev, "received GTP1U packet\n");
 		ret = gtp1u_udp_encap_recv(gti, skb);
 		break;
 	default:
@@ -343,11 +337,14 @@ static int gtp_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	}
 
 	switch (ret) {
-	case 1: /* pass up to the stack */
+	case 1:
+		netdev_dbg(gti->dev, "pass up to the process\n");
 		goto user_put;
 	case 0:
+		netdev_dbg(gti->dev, "forwarding packet from GGSN to uplink\n");
 		break;
 	case -1:
+		netdev_dbg(gti->dev, "GTP packet has been dropped\n");
 		goto drop;
 	}
 
@@ -494,17 +491,19 @@ struct gtp_pktinfo {
 	};
 	struct rtable		*rt;
 	struct pdp_ctx		*pctx;
+	struct net_device	*dev;
 };
 
 static inline void
 gtp_set_pktinfo_ipv4(struct gtp_pktinfo *pktinfo, struct iphdr *iph,
 		     struct pdp_ctx *pctx, struct rtable *rt,
-		     struct flowi4 *fl4)
+		     struct flowi4 *fl4, struct net_device *dev)
 {
 	pktinfo->iph	= iph;
 	pktinfo->pctx	= pctx;
 	pktinfo->rt	= rt;
 	pktinfo->fl4	= *fl4;
+	pktinfo->dev	= dev;
 }
 
 static int gtp_ip4_prepare_xmit(struct sk_buff *skb, struct net_device *dev,
@@ -524,7 +523,7 @@ static int gtp_ip4_prepare_xmit(struct sk_buff *skb, struct net_device *dev,
 	iph = ip_hdr(skb);
 	pctx = ipv4_pdp_find(gti, iph->daddr);
 	if (!pctx) {
-		netdev_dbg(dev, "no PDP context, skipping\n");
+		netdev_dbg(dev, "no PDP ctx found for this packet, skip\n");
 		return -ENOENT;
 	}
 	netdev_dbg(dev, "found PDP context %p\n", pctx);
@@ -535,8 +534,9 @@ static int gtp_ip4_prepare_xmit(struct sk_buff *skb, struct net_device *dev,
 				  inet->inet_saddr, 0,
 				  gti->real_dev->ifindex);
 	if (IS_ERR(rt)) {
-		netdev_dbg(dev, "no route to SSGN %pI4\n",
-			   &pctx->sgsn_addr.ip4.s_addr);
+		netdev_dbg(dev, "no route to SSGN %pI4 from ifidx=%d\n",
+			   &pctx->sgsn_addr.ip4.s_addr,
+			   gti->real_dev->ifindex);
 		dev->stats.tx_carrier_errors++;
 		goto err;
 	}
@@ -573,13 +573,14 @@ static int gtp_ip4_prepare_xmit(struct sk_buff *skb, struct net_device *dev,
 
 	if (!skb_is_gso(skb) && (iph->frag_off & htons(IP_DF)) &&
 	    mtu < ntohs(iph->tot_len)) {
+		netdev_dbg(dev, "packet too big, fragmentation needed\n");
 		memset(IPCB(skb), 0, sizeof(*IPCB(skb)));
 		icmp_send(skb, ICMP_DEST_UNREACH, ICMP_FRAG_NEEDED,
 			  htonl(mtu));
 		goto err_rt;
 	}
 
-	gtp_set_pktinfo_ipv4(pktinfo, iph, pctx, rt, &fl4);
+	gtp_set_pktinfo_ipv4(pktinfo, iph, pctx, rt, &fl4, dev);
 
 	return 0;
 err_rt:
@@ -617,7 +618,8 @@ gtp_push_ip4hdr(struct sk_buff *skb, struct gtp_pktinfo *pktinfo)
 	__ip_select_ident(iph, &pktinfo->rt->dst,
 			  (skb_shinfo(skb)->gso_segs ?: 1) - 1);
 
-	pr_info("gtp -> IP src: %pI4 dst: %pI4\n", &iph->saddr, &iph->daddr);
+	netdev_dbg(pktinfo->dev, "gtp -> IP src: %pI4 dst: %pI4\n",
+		   &iph->saddr, &iph->daddr);
 }
 
 static inline void
@@ -679,8 +681,8 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	uh->len = htons(sizeof(struct udphdr) + payload_len + gtph_len);
 	uh->check = 0;
 
-	pr_info("gtp -> UDP src: %u dst: %u (len %u)\n",
-		ntohs(uh->source), ntohs(uh->dest), ntohs(uh->len));
+	netdev_dbg(dev, "gtp -> UDP src: %u dst: %u (len %u)\n",
+		   ntohs(uh->source), ntohs(uh->dest), ntohs(uh->len));
 
 	switch (proto) {
 	case ETH_P_IP:
@@ -694,13 +696,14 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	nf_reset(skb);
 
+	netdev_dbg(dev, "Good, now packet leaving from GGSN to SGSN\n");
+
 	err = ip_local_out(skb);
 	gtp_iptunnel_xmit_stats(err, &dev->stats, dev->tstats);
 
 	return NETDEV_TX_OK;
 tx_error:
 	rcu_read_unlock();
-	pr_info("no route to reach destination\n");
 	dev->stats.tx_errors++;
 	dev_kfree_skb(skb);
 	return NETDEV_TX_OK;
@@ -720,7 +723,8 @@ static void gtp_link_setup(struct net_device *dev)
 
 static int gtp_hashtable_new(struct gtp_instance *gti, int hsize);
 static void gtp_hashtable_free(struct gtp_instance *gti);
-static int gtp_encap_enable(struct gtp_instance *gti, int fd_gtp0, int fd_gtp1);
+static int gtp_encap_enable(struct net_device *dev, struct gtp_instance *gti,
+			    int fd_gtp0, int fd_gtp1);
 
 static int gtp_newlink(struct net *src_net, struct net_device *dev,
 			struct nlattr *tb[], struct nlattr *data[])
@@ -728,8 +732,6 @@ static int gtp_newlink(struct net *src_net, struct net_device *dev,
 	struct net_device *real_dev;
 	struct gtp_instance *gti;
 	int hashsize, err, fd0, fd1;
-
-	pr_info("gtp_newlink\n");
 
 	if (!tb[IFLA_LINK])
 		return -EINVAL;
@@ -751,7 +753,7 @@ static int gtp_newlink(struct net *src_net, struct net_device *dev,
 	fd0 = nla_get_u32(data[IFLA_GTP_FD0]);
 	fd1 = nla_get_u32(data[IFLA_GTP_FD1]);
 
-	gtp_encap_enable(gti, fd0, fd1);
+	gtp_encap_enable(dev, gti, fd0, fd1);
 
 	if (!data[IFLA_GTP_HASHSIZE])
 		hashsize = 1024;
@@ -768,11 +770,11 @@ static int gtp_newlink(struct net *src_net, struct net_device *dev,
 
 	list_add_rcu(&gti->list, &gtp_instance_list);
 
-	pr_info("registered new %s interface\n", dev->name);
+	netdev_dbg(dev, "registered new interface\n");
 
 	return 0;
 err1:
-	pr_info("failed to register new netdev %d\n", err);
+	netdev_dbg(dev, "failed to register new netdev %d\n", err);
 	gtp_hashtable_free(gti);
 	return err;
 }
@@ -874,7 +876,8 @@ static void gtp_hashtable_free(struct gtp_instance *gti)
 	kfree(gti->tid_hash);
 }
 
-static int gtp_encap_enable(struct gtp_instance *gti, int fd_gtp0, int fd_gtp1)
+static int gtp_encap_enable(struct net_device *dev, struct gtp_instance *gti,
+			    int fd_gtp0, int fd_gtp1)
 {
 	int err;
 	struct socket *sock0, *sock1u;
@@ -882,25 +885,25 @@ static int gtp_encap_enable(struct gtp_instance *gti, int fd_gtp0, int fd_gtp1)
 
 	sock0 = sockfd_lookup(fd_gtp0, &err);
 	if (sock0 == NULL) {
-		pr_err("socket fd=%d not found (gtp0)\n", fd_gtp0);
+		netdev_dbg(dev, "socket fd=%d not found (gtp0)\n", fd_gtp0);
 		return -ENOENT;
 	}
 
 	if (sock0->sk->sk_protocol != IPPROTO_UDP) {
-		pr_err("socket fd=%d not UDP\n", fd_gtp0);
+		netdev_dbg(dev, "socket fd=%d not UDP\n", fd_gtp0);
 		err = -EINVAL;
 		goto err1;
 	}
 
 	sock1u = sockfd_lookup(fd_gtp1, &err);
 	if (sock1u == NULL) {
-		pr_err("socket fd=%d not found (gtp1u)\n", fd_gtp1);
+		netdev_dbg(dev, "socket fd=%d not found (gtp1u)\n", fd_gtp1);
 		err = -ENOENT;
 		goto err1;
 	}
 
 	if (sock1u->sk->sk_protocol != IPPROTO_UDP) {
-		pr_err("socket fd=%d not UDP\n", fd_gtp1);
+		netdev_dbg(dev, "socket fd=%d not UDP\n", fd_gtp1);
 		err = -EINVAL;
 		goto err2;
 	}
@@ -918,8 +921,6 @@ static int gtp_encap_enable(struct gtp_instance *gti, int fd_gtp0, int fd_gtp1)
 	udp_sk(sk)->encap_type = UDP_ENCAP_GTP1U;
 	udp_sk(sk)->encap_rcv = gtp_udp_encap_recv;
 	sk->sk_user_data = gti;
-
-	pr_info("encapsulation socket enabled\n");
 
 	return 0;
 err1:
@@ -948,8 +949,9 @@ static struct net_device *gtp_find_dev(int ifindex)
 	return NULL;
 }
 
-static int ipv4_pdp_add(struct gtp_instance *gti, struct genl_info *info)
+static int ipv4_pdp_add(struct net_device *dev, struct genl_info *info)
 {
+	struct gtp_instance *gti = netdev_priv(dev);
 	u32 hash_ms;
 	u32 hash_tid;
 	struct pdp_ctx *pctx;
@@ -995,7 +997,8 @@ static int ipv4_pdp_add(struct gtp_instance *gti, struct genl_info *info)
 		pctx->sgsn_addr.ip4.s_addr = sgsn_addr;
 		pctx->ms_addr.ip4.s_addr = ms_addr;
 
-		pr_info("update tunnel id = %u (pdp %p)\n", tid, pctx);
+		netdev_dbg(dev, "update tunnel id = %u (pdp %p)\n",
+			   tid, pctx);
 
 		return 0;
 	}
@@ -1016,7 +1019,7 @@ static int ipv4_pdp_add(struct gtp_instance *gti, struct genl_info *info)
 	hlist_add_head_rcu(&pctx->hlist_addr, &gti->addr_hash[hash_ms]);
 	hlist_add_head_rcu(&pctx->hlist_tid, &gti->tid_hash[hash_tid]);
 
-	pr_info("adding tunnel id = %u (pdp %p)\n", tid, pctx);
+	netdev_dbg(dev, "adding tunnel id = %u (pdp %p)\n", tid, pctx);
 
 	return 0;
 }
@@ -1024,7 +1027,6 @@ static int ipv4_pdp_add(struct gtp_instance *gti, struct genl_info *info)
 static int gtp_genl_tunnel_new(struct sk_buff *skb, struct genl_info *info)
 {
 	struct net_device *dev;
-	struct gtp_instance *gti;
 
 	if (!info->attrs[GTPA_VERSION] ||
 	    !info->attrs[GTPA_LINK] ||
@@ -1038,9 +1040,7 @@ static int gtp_genl_tunnel_new(struct sk_buff *skb, struct genl_info *info)
 	if (dev == NULL)
 		return -ENODEV;
 
-	gti = netdev_priv(dev);
-
-	return ipv4_pdp_add(gti, info);
+	return ipv4_pdp_add(dev, info);
 }
 
 static int gtp_genl_tunnel_delete(struct sk_buff *skb, struct genl_info *info)
@@ -1050,8 +1050,6 @@ static int gtp_genl_tunnel_delete(struct sk_buff *skb, struct genl_info *info)
 	struct pdp_ctx *pctx;
 	u32 gtp_version;
 	u64 tid;
-
-	pr_info("deleting tunnel\n");
 
 	if (!info->attrs[GTPA_VERSION] ||
 	    !info->attrs[GTPA_LINK] ||
@@ -1093,6 +1091,9 @@ static int gtp_genl_tunnel_delete(struct sk_buff *skb, struct genl_info *info)
 	if (pctx == NULL)
 		return -ENOENT;
 
+	netdev_dbg(dev, "deleting tunnel with ID %lld\n",
+		   (unsigned long long) nla_get_u64(info->attrs[GTPA_TID]));
+
 	hlist_del_rcu(&pctx->hlist_tid);
 	hlist_del_rcu(&pctx->hlist_addr);
 	kfree_rcu(pctx, rcu_head);
@@ -1119,8 +1120,6 @@ gtp_genl_fill_info(struct sk_buff *skb, u32 snd_portid, u32 snd_seq,
 			    type);
 	if (genlh == NULL)
 		goto nlmsg_failure;
-
-	pr_info("filling info for tunnel %llu\n", pctx->tid);
 
 	if (nla_put_u32(skb, GTPA_VERSION, pctx->gtp_version) ||
 	    nla_put_u32(skb, GTPA_SGSN_ADDRESS, pctx->sgsn_addr.ip4.s_addr) ||
@@ -1315,7 +1314,7 @@ static int __init gtp_init(void)
 		sizeof(struct pdp_ctx));
 	return 0;
 err1:
-	pr_info("error loading GTP module loaded\n");
+	pr_err("error loading GTP module loaded\n");
 	genl_unregister_family(&gtp_genl_family);
 	return err;
 }
