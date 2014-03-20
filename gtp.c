@@ -955,7 +955,8 @@ static int ipv4_pdp_add(struct net_device *dev, struct genl_info *info)
 	u32 hash_ms;
 	u32 hash_tid;
 	struct pdp_ctx *pctx;
-	u32 gtp_version, link, sgsn_addr, ms_addr, tid;
+	u32 gtp_version, link, sgsn_addr, ms_addr;
+	u64 tid;
 	bool found = false;
 
 	gtp_version = nla_get_u32(info->attrs[GTPA_VERSION]);
@@ -997,7 +998,7 @@ static int ipv4_pdp_add(struct net_device *dev, struct genl_info *info)
 		pctx->sgsn_addr.ip4.s_addr = sgsn_addr;
 		pctx->ms_addr.ip4.s_addr = ms_addr;
 
-		netdev_dbg(dev, "update tunnel id = %u (pdp %p)\n",
+		netdev_dbg(dev, "update tunnel id = %llx (pdp %p)\n",
 			   tid, pctx);
 
 		return 0;
@@ -1014,12 +1015,18 @@ static int ipv4_pdp_add(struct net_device *dev, struct genl_info *info)
 	pctx->ms_addr.ip4.s_addr = ms_addr;
 	atomic_set(&pctx->tx_seq, 0);
 
-	hash_tid = ipv4_hashfn(tid) % gti->hash_size;
-
+	switch (gtp_version) {
+	case GTP_V0:
+		hash_tid = gtp0_hashfn(tid) % gti->hash_size;
+		break;
+	case GTP_V1:
+		hash_tid = gtp1u_hashfn(tid) % gti->hash_size;
+		break;
+	}
 	hlist_add_head_rcu(&pctx->hlist_addr, &gti->addr_hash[hash_ms]);
 	hlist_add_head_rcu(&pctx->hlist_tid, &gti->tid_hash[hash_tid]);
 
-	netdev_dbg(dev, "adding tunnel id = %u (pdp %p)\n", tid, pctx);
+	netdev_dbg(dev, "adding tunnel id = %llx (pdp %p)\n", tid, pctx);
 
 	return 0;
 }
