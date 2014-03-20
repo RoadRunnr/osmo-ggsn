@@ -1264,8 +1264,9 @@ out:
 }
 
 static struct nla_policy gtp_genl_policy[GTPA_MAX + 1] = {
-	[GTPA_VERSION]		= { .type = NLA_U32, },
 	[GTPA_LINK]		= { .type = NLA_U32, },
+	[GTPA_VERSION]		= { .type = NLA_U32, },
+	[GTPA_TID]		= { .type = NLA_U64, },
 	[GTPA_SGSN_ADDRESS]	= { .type = NLA_NESTED, },
 	[GTPA_MS_ADDRESS]	= { .type = NLA_NESTED, },
 };
