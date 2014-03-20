@@ -430,7 +430,7 @@ gtp0_push_header(struct sk_buff *skb, struct pdp_ctx *pctx, int payload_len)
 	gtp0->type = GTP_TPDU;
 	gtp0->length = htons(payload_len);
 	gtp0->seq = htons((atomic_inc_return(&pctx->tx_seq)-1) % 0xffff);
-	gtp0->flow = htonl(pctx->flow);
+	gtp0->flow = htons(pctx->flow);
 	gtp0->number = 0xFF;
 	gtp0->spare[0] = gtp0->spare[1] = gtp0->spare[2] = 0xFF;
 	gtp0->tid = cpu_to_be64(pctx->tid);
@@ -952,10 +952,9 @@ static struct net_device *gtp_find_dev(int ifindex)
 static int ipv4_pdp_add(struct net_device *dev, struct genl_info *info)
 {
 	struct gtp_instance *gti = netdev_priv(dev);
-	u32 hash_ms;
-	u32 hash_tid;
 	struct pdp_ctx *pctx;
-	u32 gtp_version, link, sgsn_addr, ms_addr;
+	u16 flow = 0;
+	u32 gtp_version, link, sgsn_addr, ms_addr, hash_ms, hash_tid;
 	u64 tid;
 	bool found = false;
 
@@ -972,6 +971,17 @@ static int ipv4_pdp_add(struct net_device *dev, struct genl_info *info)
 	/* GTPv1 allows 32-bits tunnel IDs */
 	if (gtp_version == GTP_V1 && tid > UINT_MAX)
 		return -EINVAL;
+
+	/* According to TS 09.60, sections 7.5.1 and 7.5.2, the flow label
+	 * needs to be the same for uplink and downlink packets, so let's
+	 * annotate this.
+	 */
+	if (gtp_version == GTP_V0) {
+		if (!info->attrs[GTPA_FLOW])
+			return -EINVAL;
+
+		flow = nla_get_u16(info->attrs[GTPA_FLOW]);
+	}
 
 	link = nla_get_u32(info->attrs[GTPA_LINK]);
 	sgsn_addr = nla_get_u32(info->attrs[GTPA_SGSN_ADDRESS]);
@@ -1013,10 +1023,16 @@ static int ipv4_pdp_add(struct net_device *dev, struct genl_info *info)
 	pctx->tid = tid;
 	pctx->sgsn_addr.ip4.s_addr = sgsn_addr;
 	pctx->ms_addr.ip4.s_addr = ms_addr;
+	pctx->flow = flow;
 	atomic_set(&pctx->tx_seq, 0);
 
 	switch (gtp_version) {
 	case GTP_V0:
+		/* TS 09.60: "The flow label identifies unambiguously a GTP
+		 * flow.". We use the tid for this instead, I cannot find a
+		 * situation in which this doesn't unambiguosly identify the
+		 * PDP context.
+		 */
 		hash_tid = gtp0_hashfn(tid) % gti->hash_size;
 		break;
 	case GTP_V1:
@@ -1131,7 +1147,9 @@ gtp_genl_fill_info(struct sk_buff *skb, u32 snd_portid, u32 snd_seq,
 	if (nla_put_u32(skb, GTPA_VERSION, pctx->gtp_version) ||
 	    nla_put_u32(skb, GTPA_SGSN_ADDRESS, pctx->sgsn_addr.ip4.s_addr) ||
 	    nla_put_u32(skb, GTPA_MS_ADDRESS, pctx->ms_addr.ip4.s_addr) ||
-	    nla_put_u64(skb, GTPA_TID, pctx->tid))
+	    nla_put_u64(skb, GTPA_TID, pctx->tid) ||
+	    (pctx->gtp_version == GTP_V0 &&
+	     nla_put_u16(skb, GTPA_FLOW, pctx->flow)))
 		goto nla_put_failure;
 
 	return genlmsg_end(skb, genlh);
@@ -1269,6 +1287,7 @@ static struct nla_policy gtp_genl_policy[GTPA_MAX + 1] = {
 	[GTPA_TID]		= { .type = NLA_U64, },
 	[GTPA_SGSN_ADDRESS]	= { .type = NLA_NESTED, },
 	[GTPA_MS_ADDRESS]	= { .type = NLA_NESTED, },
+	[GTPA_FLOW]		= { .type = NLA_U16, },
 };
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 13, 0)

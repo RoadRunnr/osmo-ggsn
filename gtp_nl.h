@@ -39,6 +39,7 @@ enum gtp_attrs {
 	GTPA_TID,	/* 64 bits for GTPv1 */
 	GTPA_SGSN_ADDRESS,
 	GTPA_MS_ADDRESS,
+	GTPA_FLOW,
 	__GTPA_MAX,
 };
 #define GTPA_MAX (__GTPA_MAX + 1)
