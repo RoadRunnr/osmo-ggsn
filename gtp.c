@@ -39,7 +39,17 @@ struct pdp_ctx {
 	struct hlist_node hlist_tid;
 	struct hlist_node hlist_addr;
 
-	u64 tid;
+	union {
+		uint64_t tid;
+		struct {
+			uint64_t tid;
+			u16 flow;
+		} v0;
+		struct {
+			uint32_t i_tei;
+			uint32_t o_tei;
+		} v1;
+	} u;
 	u8 gtp_version;
 	u16 af;
 
@@ -53,7 +63,6 @@ struct pdp_ctx {
 		struct in_addr ip4;
 	} sgsn_addr;
 
-	u16 flow;
 	atomic_t tx_seq;
 
 	struct rcu_head rcu_head;
@@ -113,7 +122,7 @@ static struct pdp_ctx *gtp0_pdp_find(struct gtp_instance *gti, u64 tid)
 	head = &gti->tid_hash[gtp0_hashfn(tid) % gti->hash_size];
 
 	hlist_for_each_entry_rcu(pdp, head, hlist_tid) {
-		if (pdp->gtp_version == GTP_V0 && pdp->tid == tid)
+		if (pdp->gtp_version == GTP_V0 && pdp->u.v0.tid == tid)
 			return pdp;
 	}
 
@@ -129,7 +138,7 @@ static struct pdp_ctx *gtp1_pdp_find(struct gtp_instance *gti, u32 tid)
 	head = &gti->tid_hash[gtp1u_hashfn(tid) % gti->hash_size];
 
 	hlist_for_each_entry_rcu(pdp, head, hlist_tid) {
-		if (pdp->gtp_version == GTP_V1 && pdp->tid == tid)
+		if (pdp->gtp_version == GTP_V1 && pdp->u.v1.i_tei == tid)
 			return pdp;
 	}
 
@@ -456,10 +465,10 @@ gtp0_push_header(struct sk_buff *skb, struct pdp_ctx *pctx)
 	gtp0->type = GTP_TPDU;
 	gtp0->length = htons(payload_len);
 	gtp0->seq = htons((atomic_inc_return(&pctx->tx_seq)-1) % 0xffff);
-	gtp0->flow = htons(pctx->flow);
+	gtp0->flow = htons(pctx->u.v0.flow);
 	gtp0->number = 0xFF;
 	gtp0->spare[0] = gtp0->spare[1] = gtp0->spare[2] = 0xFF;
-	gtp0->tid = cpu_to_be64(pctx->tid);
+	gtp0->tid = cpu_to_be64(pctx->u.v0.tid);
 }
 
 static inline void
@@ -480,7 +489,7 @@ gtp1_push_header(struct sk_buff *skb, struct pdp_ctx *pctx)
 	gtp1->flags = 0x38; /* V1, GTP-non-prime */
 	gtp1->type = GTP_TPDU;
 	gtp1->length = htons(payload_len);
-	gtp1->tid = htonl((u32)pctx->tid);
+	gtp1->tid = htonl(pctx->u.v1.o_tei);
 
 	/* TODO: Suppport for extension header, sequence number and N-PDU.
 	 * 	 Update the length field if any of them is available.
@@ -1021,43 +1030,45 @@ static struct net_device *gtp_find_dev(struct net *net, int ifindex)
 	return NULL;
 }
 
+static void ipv4_pdp_fill(struct pdp_ctx *pctx, struct genl_info *info)
+{
+	pctx->gtp_version = nla_get_u32(info->attrs[GTPA_VERSION]);
+	pctx->af = AF_INET;
+	pctx->sgsn_addr.ip4.s_addr =
+		nla_get_u32(info->attrs[GTPA_SGSN_ADDRESS]);
+	pctx->ms_addr.ip4.s_addr =
+		nla_get_u32(info->attrs[GTPA_MS_ADDRESS]);
+
+	switch (pctx->gtp_version) {
+	case GTP_V0:
+
+		/* According to TS 09.60, sections 7.5.1 and 7.5.2, the flow
+		 * label needs to be the same for uplink and downlink packets,
+		 * so let's annotate this.
+		 */
+		pctx->u.v0.tid = nla_get_u64(info->attrs[GTPA_TID]);
+		pctx->u.v0.flow = nla_get_u16(info->attrs[GTPA_FLOW]);
+		break;
+
+	case GTP_V1:
+		pctx->u.v1.i_tei = nla_get_u32(info->attrs[GTPA_I_TEI]);
+		pctx->u.v1.o_tei = nla_get_u32(info->attrs[GTPA_O_TEI]);
+
+		break;
+
+	default:
+		break;
+	}
+}
+
 static int ipv4_pdp_add(struct net_device *dev, struct genl_info *info)
 {
 	struct gtp_instance *gti = netdev_priv(dev);
 	struct pdp_ctx *pctx;
-	u16 flow = 0;
-	u32 gtp_version, sgsn_addr, ms_addr, hash_ms, hash_tid;
-	u64 tid;
+	u32 ms_addr, hash_ms, hash_tid = 0;
 	bool found = false;
 
-	gtp_version = nla_get_u32(info->attrs[GTPA_VERSION]);
-	switch (gtp_version) {
-	case GTP_V0:
-	case GTP_V1:
-		break;
-	default:
-		return -EINVAL;
-	}
-
-	tid = nla_get_u64(info->attrs[GTPA_TID]);
-	/* GTPv1 allows 32-bits tunnel IDs */
-	if (gtp_version == GTP_V1 && tid > UINT_MAX)
-		return -EINVAL;
-
-	/* According to TS 09.60, sections 7.5.1 and 7.5.2, the flow label
-	 * needs to be the same for uplink and downlink packets, so let's
-	 * annotate this.
-	 */
-	if (gtp_version == GTP_V0) {
-		if (!info->attrs[GTPA_FLOW])
-			return -EINVAL;
-
-		flow = nla_get_u16(info->attrs[GTPA_FLOW]);
-	}
-
-	sgsn_addr = nla_get_u32(info->attrs[GTPA_SGSN_ADDRESS]);
 	ms_addr = nla_get_u32(info->attrs[GTPA_MS_ADDRESS]);
-
 	hash_ms = ipv4_hashfn(ms_addr) % gti->hash_size;
 
 	hlist_for_each_entry_rcu(pctx, &gti->addr_hash[hash_ms], hlist_addr) {
@@ -1073,47 +1084,50 @@ static int ipv4_pdp_add(struct net_device *dev, struct genl_info *info)
 		if (info->nlhdr->nlmsg_flags & NLM_F_REPLACE)
 			return -EOPNOTSUPP;
 
-		pctx->af = AF_INET;
-		pctx->gtp_version = gtp_version;
-		pctx->tid = tid;
-		pctx->sgsn_addr.ip4.s_addr = sgsn_addr;
-		pctx->ms_addr.ip4.s_addr = ms_addr;
+		ipv4_pdp_fill(pctx, info);
 
-		netdev_dbg(dev, "update tunnel id = %llx (pdp %p)\n",
-			   tid, pctx);
+		if (pctx->gtp_version == GTP_V0)
+			netdev_dbg(dev, "GTPv0-U: update tunnel id = %llx (pdp %p)\n",
+				   pctx->u.v0.tid, pctx);
+		else if (pctx->gtp_version == GTP_V1)
+			netdev_dbg(dev, "GTPv1-U: update tunnel id = %x/%x (pdp %p)\n",
+				   pctx->u.v1.i_tei, pctx->u.v1.o_tei, pctx);
 
 		return 0;
+
 	}
 
 	pctx = kmalloc(sizeof(struct pdp_ctx), GFP_KERNEL);
 	if (pctx == NULL)
 		return -ENOMEM;
 
-	pctx->af = AF_INET;
-	pctx->gtp_version = gtp_version;
-	pctx->tid = tid;
-	pctx->sgsn_addr.ip4.s_addr = sgsn_addr;
-	pctx->ms_addr.ip4.s_addr = ms_addr;
-	pctx->flow = flow;
+	ipv4_pdp_fill(pctx, info);
 	atomic_set(&pctx->tx_seq, 0);
 
-	switch (gtp_version) {
+	switch (pctx->gtp_version) {
 	case GTP_V0:
 		/* TS 09.60: "The flow label identifies unambiguously a GTP
 		 * flow.". We use the tid for this instead, I cannot find a
 		 * situation in which this doesn't unambiguosly identify the
 		 * PDP context.
 		 */
-		hash_tid = gtp0_hashfn(tid) % gti->hash_size;
+		hash_tid = gtp0_hashfn(pctx->u.v0.tid) % gti->hash_size;
 		break;
+
 	case GTP_V1:
-		hash_tid = gtp1u_hashfn(tid) % gti->hash_size;
+		hash_tid = gtp1u_hashfn(pctx->u.v1.i_tei) % gti->hash_size;
 		break;
 	}
+
 	hlist_add_head_rcu(&pctx->hlist_addr, &gti->addr_hash[hash_ms]);
 	hlist_add_head_rcu(&pctx->hlist_tid, &gti->tid_hash[hash_tid]);
 
-	netdev_dbg(dev, "adding tunnel id = %llx (pdp %p)\n", tid, pctx);
+	if (pctx->gtp_version == GTP_V0)
+		netdev_dbg(dev, "GTPv0-U: adding tunnel id = %llx (pdp %p)\n",
+			   pctx->u.v0.tid, pctx);
+	else if (pctx->gtp_version == GTP_V1)
+		netdev_dbg(dev, "GTPv1-U: adding tunnel id = %x/%x (pdp %p)\n",
+			   pctx->u.v1.i_tei, pctx->u.v1.o_tei, pctx);
 
 	return 0;
 }
@@ -1126,9 +1140,25 @@ static int gtp_genl_tunnel_new(struct sk_buff *skb, struct genl_info *info)
 	if (!info->attrs[GTPA_VERSION] ||
 	    !info->attrs[GTPA_LINK] ||
 	    !info->attrs[GTPA_SGSN_ADDRESS] ||
-	    !info->attrs[GTPA_MS_ADDRESS] ||
-	    !info->attrs[GTPA_TID])
+	    !info->attrs[GTPA_MS_ADDRESS])
 		return -EINVAL;
+
+	switch (nla_get_u32(info->attrs[GTPA_VERSION])) {
+	case GTP_V0:
+		if (!info->attrs[GTPA_TID] ||
+		    !info->attrs[GTPA_FLOW])
+			return -EINVAL;
+		break;
+
+	case GTP_V1:
+		if (!info->attrs[GTPA_I_TEI] ||
+		    !info->attrs[GTPA_O_TEI])
+			return -EINVAL;
+		break;
+
+	default:
+		return -EINVAL;
+	}
 
 	net = gtp_genl_get_net(sock_net(skb->sk), info->attrs);
 	if (IS_ERR(net))
@@ -1148,28 +1178,9 @@ static int gtp_genl_tunnel_delete(struct sk_buff *skb, struct genl_info *info)
 	struct gtp_instance *gti;
 	struct net_device *dev;
 	struct pdp_ctx *pctx;
-	u32 gtp_version;
-	u64 tid;
 
 	if (!info->attrs[GTPA_VERSION] ||
-	    !info->attrs[GTPA_LINK] ||
-	    !info->attrs[GTPA_SGSN_ADDRESS] ||
-	    !info->attrs[GTPA_MS_ADDRESS] ||
-	    !info->attrs[GTPA_TID])
-		return -EINVAL;
-
-	gtp_version = nla_get_u32(info->attrs[GTPA_VERSION]);
-	switch (gtp_version) {
-	case GTP_V0:
-	case GTP_V1:
-		break;
-	default:
-		return -EINVAL;
-	}
-
-	tid = nla_get_u64(info->attrs[GTPA_TID]);
-	/* GTPv1 allows 32-bits tunnel IDs */
-	if (gtp_version == GTP_V1 && tid > UINT_MAX)
+	    !info->attrs[GTPA_LINK])
 		return -EINVAL;
 
 	net = gtp_genl_get_net(sock_net(skb->sk), info->attrs);
@@ -1183,20 +1194,32 @@ static int gtp_genl_tunnel_delete(struct sk_buff *skb, struct genl_info *info)
 
 	gti = netdev_priv(dev);
 
-	switch (gtp_version) {
+	switch (nla_get_u32(info->attrs[GTPA_VERSION])) {
 	case GTP_V0:
+		if (!info->attrs[GTPA_TID])
+			return -EINVAL;
 		pctx = gtp0_pdp_find(gti, nla_get_u64(info->attrs[GTPA_TID]));
 		break;
+
 	case GTP_V1:
-		pctx = gtp1_pdp_find(gti, nla_get_u64(info->attrs[GTPA_TID]));
+		if (!info->attrs[GTPA_I_TEI])
+			return -EINVAL;
+		pctx = gtp1_pdp_find(gti, nla_get_u64(info->attrs[GTPA_I_TEI]));
 		break;
+
+	default:
+		return -EINVAL;
 	}
 
 	if (pctx == NULL)
 		return -ENOENT;
 
-	netdev_dbg(dev, "deleting tunnel with ID %lld\n",
-		   (unsigned long long) nla_get_u64(info->attrs[GTPA_TID]));
+	if (pctx->gtp_version == GTP_V0)
+		netdev_dbg(dev, "GTPv0-U: deleting tunnel id = %llx (pdp %p)\n",
+			   pctx->u.v0.tid, pctx);
+	else if (pctx->gtp_version == GTP_V1)
+		netdev_dbg(dev, "GTPv1-U: deleting tunnel id = %x/%x (pdp %p)\n",
+			   pctx->u.v1.i_tei, pctx->u.v1.o_tei, pctx);
 
 	hlist_del_rcu(&pctx->hlist_tid);
 	hlist_del_rcu(&pctx->hlist_addr);
@@ -1228,9 +1251,12 @@ gtp_genl_fill_info(struct sk_buff *skb, u32 snd_portid, u32 snd_seq,
 	if (nla_put_u32(skb, GTPA_VERSION, pctx->gtp_version) ||
 	    nla_put_u32(skb, GTPA_SGSN_ADDRESS, pctx->sgsn_addr.ip4.s_addr) ||
 	    nla_put_u32(skb, GTPA_MS_ADDRESS, pctx->ms_addr.ip4.s_addr) ||
-	    nla_put_u64(skb, GTPA_TID, pctx->tid) ||
 	    (pctx->gtp_version == GTP_V0 &&
-	     nla_put_u16(skb, GTPA_FLOW, pctx->flow)))
+	     nla_put_u64(skb, GTPA_TID, pctx->u.v0.tid) &&
+	     nla_put_u16(skb, GTPA_FLOW, pctx->u.v0.flow)) ||
+	    (pctx->gtp_version == GTP_V1 &&
+	     nla_put_u32(skb, GTPA_I_TEI, pctx->u.v1.i_tei) &&
+	     nla_put_u32(skb, GTPA_O_TEI, pctx->u.v1.o_tei)))
 		goto nla_put_failure;
 
 	genlmsg_end(skb, genlh);
@@ -1277,23 +1303,16 @@ static int gtp_genl_tunnel_get(struct sk_buff *skb, struct genl_info *info)
 	gti = netdev_priv(dev);
 
 	rcu_read_lock();
-	if (info->attrs[GTPA_TID]) {
+	if (gtp_version == GTP_V0 &&
+	    info->attrs[GTPA_TID]) {
 		u64 tid = nla_get_u64(info->attrs[GTPA_TID]);
 
-		/* GTPv1 allows 32-bits tunnel IDs */
-		if (gtp_version == GTP_V1 && tid > UINT_MAX) {
-			err = -EINVAL;
-			goto err_unlock;
-		}
+		pctx = gtp0_pdp_find(gti, tid);
+	} else if (gtp_version == GTP_V1 &&
+		 info->attrs[GTPA_I_TEI]) {
+		u32 tid = nla_get_u32(info->attrs[GTPA_I_TEI]);
 
-		switch (gtp_version) {
-		case GTP_V0:
-			pctx = gtp0_pdp_find(gti, tid);
-			break;
-		case GTP_V1:
-			pctx = gtp1_pdp_find(gti, tid);
-			break;
-		}
+		pctx = gtp1_pdp_find(gti, tid);
 	} else if (info->attrs[GTPA_MS_ADDRESS]) {
 		u32 ip = nla_get_u32(info->attrs[GTPA_MS_ADDRESS]);
 
@@ -1347,7 +1366,7 @@ gtp_genl_tunnel_dump(struct sk_buff *skb, struct netlink_callback *cb)
 
 		for (i = k; i < gti->hash_size; i++) {
 			hlist_for_each_entry_rcu(pctx, &gti->tid_hash[i], hlist_tid) {
-				if (tid && tid != pctx->tid)
+				if (tid && tid != pctx->u.tid)
 					continue;
 				else
 					tid = 0;
@@ -1358,7 +1377,7 @@ gtp_genl_tunnel_dump(struct sk_buff *skb, struct netlink_callback *cb)
 							 cb->nlh->nlmsg_type, pctx);
 				if (ret < 0) {
 					cb->args[0] = i;
-					cb->args[1] = pctx->tid;
+					cb->args[1] = pctx->u.tid;
 					cb->args[2] = (unsigned long)gti;
 					goto out;
 				}
@@ -1378,6 +1397,8 @@ static struct nla_policy gtp_genl_policy[GTPA_MAX + 1] = {
 	[GTPA_MS_ADDRESS]	= { .type = NLA_NESTED, },
 	[GTPA_FLOW]		= { .type = NLA_U16, },
 	[GTPA_NET_NS_FD]	= { .type = NLA_U32, },
+	[GTPA_I_TEI]		= { .type = NLA_U32, },
+	[GTPA_O_TEI]		= { .type = NLA_U32, },
 };
 
 static const struct genl_ops gtp_genl_ops[] = {
