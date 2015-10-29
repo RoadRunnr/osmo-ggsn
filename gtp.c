@@ -1291,11 +1291,7 @@ static struct nla_policy gtp_genl_policy[GTPA_MAX + 1] = {
 	[GTPA_FLOW]		= { .type = NLA_U16, },
 };
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 13, 0)
 static const struct genl_ops gtp_genl_ops[] = {
-#else
-static struct genl_ops gtp_genl_ops[] = {
-#endif
 	{
 		.cmd = GTP_CMD_TUNNEL_NEW,
 		.doit = gtp_genl_tunnel_new,
