@@ -1,9 +1,16 @@
-CC=gcc
-KDIR := /lib/modules/$(shell uname -r)/build
+KERNEL_SRC := /lib/modules/$(shell uname -r)/build
 
 obj-m += gtp.o
 
-default:
-	$(MAKE) -C $(KDIR) SUBDIRS=$(PWD) modules
+SRC := $(shell pwd)
+
+all:
+	$(MAKE) -C $(KERNEL_SRC) M=$(SRC)
+
+modules_install:
+	$(MAKE) -C $(KERNEL_SRC) M=$(SRC) modules_install
+
 clean:
-	rm -rf *.o *.mod.* modules.order Module.symvers *.ko .tmp_versions .*.cmd
+	rm -f *.o *~ core .depend .*.cmd *.ko *.mod.c
+	rm -f Module.markers Module.symvers modules.order
+	rm -rf .tmp_versions Modules.symvers
