@@ -1153,7 +1153,8 @@ gtp_genl_fill_info(struct sk_buff *skb, u32 snd_portid, u32 snd_seq,
 	     nla_put_u16(skb, GTPA_FLOW, pctx->flow)))
 		goto nla_put_failure;
 
-	return genlmsg_end(skb, genlh);
+	genlmsg_end(skb, genlh);
+	return 0;
 
 nlmsg_failure:
 nla_put_failure:
