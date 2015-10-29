@@ -718,6 +718,8 @@ static const struct net_device_ops gtp_netdev_ops = {
 
 static void gtp_link_setup(struct net_device *dev)
 {
+	dev->priv_flags		|= IFF_NO_QUEUE;
+
 	dev->netdev_ops		= &gtp_netdev_ops;
 	dev->destructor		= free_netdev;
 }
