@@ -616,7 +616,7 @@ gtp_push_ip4hdr(struct sk_buff *skb, struct gtp_pktinfo *pktinfo)
 	iph->daddr	=	pktinfo->fl4.daddr;
 	iph->saddr	=	pktinfo->fl4.saddr;
 	iph->ttl	=	ip4_dst_hoplimit(&pktinfo->rt->dst);
-	__ip_select_ident(iph, &pktinfo->rt->dst,
+	__ip_select_ident(dev_net(pktinfo->rt->dst.dev), iph,
 			  (skb_shinfo(skb)->gso_segs ?: 1) - 1);
 
 	netdev_dbg(pktinfo->dev, "gtp -> IP src: %pI4 dst: %pI4\n",
