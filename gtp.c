@@ -80,6 +80,8 @@ struct gtp_net {
 	struct list_head gtp_instance_list;
 };
 
+static void gtp_encap_disable(struct gtp_instance *gti);
+
 static inline u32 gtp0_hashfn(u64 tid)
 {
 	u32 *tid32 = (u32 *) &tid;
@@ -317,6 +319,16 @@ out_rcu:
 	return ret;
 }
 
+static void gtp_udp_encap_destroy(struct sock *sk)
+{
+	struct gtp_instance *gti = sk_to_gti(sk);
+
+	if (gti) {
+		gtp_encap_disable(gti);
+		sock_put(sk);
+	}
+}
+
 /* UDP encapsulation receive handler. See net/ipv4/udp.c.
  * Return codes: 0: success, <0: error, >0: passed up to userspace UDP.
  */
@@ -400,8 +412,6 @@ static int gtp_dev_init(struct net_device *dev)
 
 	return 0;
 }
-
-static void gtp_encap_disable(struct gtp_instance *gti);
 
 static void gtp_dev_uninit(struct net_device *dev)
 {
@@ -944,15 +954,18 @@ static int gtp_encap_enable(struct net_device *dev, struct gtp_instance *gti,
 	sk = gti->sock0->sk;
 	udp_sk(sk)->encap_type = UDP_ENCAP_GTP0;
 	udp_sk(sk)->encap_rcv = gtp_udp_encap_recv;
+	udp_sk(sk)->encap_destroy = gtp_udp_encap_destroy;
 	sk->sk_user_data = gti;
 	udp_encap_enable();
 
 	sk = gti->sock1u->sk;
 	udp_sk(sk)->encap_type = UDP_ENCAP_GTP1U;
 	udp_sk(sk)->encap_rcv = gtp_udp_encap_recv;
+	udp_sk(sk)->encap_destroy = gtp_udp_encap_destroy;
 	sk->sk_user_data = gti;
 
-	return 0;
+	err = 0;
+
 err2:
 	sockfd_put(sock1u);
 err1:
@@ -962,10 +975,17 @@ err1:
 
 static void gtp_encap_disable(struct gtp_instance *gti)
 {
-	if (gti->sock1u)
-		sockfd_put(gti->sock1u);
-	if (gti->sock0)
-		sockfd_put(gti->sock0);
+	if (gti->sock0 && gti->sock0->sk) {
+		udp_sk(gti->sock0->sk)->encap_type = 0;
+		rcu_assign_sk_user_data(gti->sock0->sk, NULL);
+	}
+	if (gti->sock1u && gti->sock1u->sk) {
+		udp_sk(gti->sock1u->sk)->encap_type = 0;
+		rcu_assign_sk_user_data(gti->sock1u->sk, NULL);
+	}
+
+	gti->sock0 = NULL;
+	gti->sock1u = NULL;
 }
 
 static struct net_device *gtp_find_dev(struct net *net, int ifindex)
