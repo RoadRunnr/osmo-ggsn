@@ -10,10 +10,6 @@
 #define UDP_ENCAP_GTP1U	5
 #endif
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 13, 0)
-#define pcpu_sw_netstats pcpu_tstats
-#endif
-
 /* general GTP protocol related definitions */
 
 #define GTP0_PORT	3386
