@@ -24,6 +24,7 @@
 #include <net/protocol.h>
 #include <net/ip.h>
 #include <net/udp.h>
+#include <net/udp_tunnel.h>
 #include <net/icmp.h>
 #include <net/xfrm.h>
 #include <net/genetlink.h>
@@ -917,7 +918,7 @@ static int gtp_encap_enable(struct net_device *dev, struct gtp_instance *gti,
 {
 	int err;
 	struct socket *sock0, *sock1u;
-	struct sock *sk;
+	struct udp_tunnel_sock_cfg tuncfg = {NULL};
 
 	netdev_dbg(dev, "enable gtp on %d, %d\n", fd_gtp0, fd_gtp1);
 
@@ -951,18 +952,15 @@ static int gtp_encap_enable(struct net_device *dev, struct gtp_instance *gti,
 	gti->sock0 = sock0;
 	gti->sock1u = sock1u;
 
-	sk = gti->sock0->sk;
-	udp_sk(sk)->encap_type = UDP_ENCAP_GTP0;
-	udp_sk(sk)->encap_rcv = gtp_udp_encap_recv;
-	udp_sk(sk)->encap_destroy = gtp_udp_encap_destroy;
-	sk->sk_user_data = gti;
-	udp_encap_enable();
+	tuncfg.sk_user_data = gti;
+	tuncfg.encap_rcv = gtp_udp_encap_recv;
+	tuncfg.encap_destroy = gtp_udp_encap_destroy;
 
-	sk = gti->sock1u->sk;
-	udp_sk(sk)->encap_type = UDP_ENCAP_GTP1U;
-	udp_sk(sk)->encap_rcv = gtp_udp_encap_recv;
-	udp_sk(sk)->encap_destroy = gtp_udp_encap_destroy;
-	sk->sk_user_data = gti;
+	tuncfg.encap_type = UDP_ENCAP_GTP0;
+	setup_udp_tunnel_sock(sock_net(gti->sock0->sk), gti->sock0, &tuncfg);
+
+	tuncfg.encap_type = UDP_ENCAP_GTP1U;
+	setup_udp_tunnel_sock(sock_net(gti->sock1u->sk), gti->sock1u, &tuncfg);
 
 	err = 0;
 
