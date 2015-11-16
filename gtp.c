@@ -933,10 +933,10 @@ static int gtp_encap_enable(struct net_device *dev, struct gtp_instance *gti,
 	sk->sk_user_data = gti;
 
 	return 0;
-err1:
-	sockfd_put(sock0);
 err2:
 	sockfd_put(sock1u);
+err1:
+	sockfd_put(sock0);
 	return err;
 }
 
