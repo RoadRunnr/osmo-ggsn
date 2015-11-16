@@ -1178,23 +1178,43 @@ static int ipv4_pdp_add(struct net_device *dev, struct genl_info *info)
 	}
 
 	if (found) {
+		struct pdp_ctx *repl_pctx;
+
 		if (info->nlhdr->nlmsg_flags & NLM_F_EXCL)
 			return -EEXIST;
-		if (info->nlhdr->nlmsg_flags & NLM_F_REPLACE)
-			return -EOPNOTSUPP;
 
-		ipv4_pdp_fill(pctx, info);
+		repl_pctx = kmemdup(pctx, sizeof(struct pdp_ctx), GFP_KERNEL);
+		if (repl_pctx == NULL)
+			return -ENOMEM;
 
-		if (pctx->gtp_version == GTP_V0)
+		ipv4_pdp_fill(repl_pctx, info);
+
+		/* only the SGSN can be changed */
+		if (pctx->af != repl_pctx->af ||
+		    pctx->gtp_version != repl_pctx->gtp_version ||
+		    memcpy(&pctx->u, &repl_pctx->u, sizeof(pctx->u) != 0)) {
+			kfree(repl_pctx);
+			return -EINVAL;
+		}
+
+		hlist_replace_rcu(&pctx->hlist_addr, &repl_pctx->hlist_addr);
+		hlist_replace_rcu(&pctx->hlist_tid, &repl_pctx->hlist_tid);
+
+		kfree_rcu(pctx, rcu_head);
+
+		if (repl_pctx->gtp_version == GTP_V0)
 			netdev_dbg(dev, "GTPv0-U: update tunnel id = %llx (pdp %p)\n",
-				   pctx->u.v0.tid, pctx);
-		else if (pctx->gtp_version == GTP_V1)
+				   repl_pctx->u.v0.tid, repl_pctx);
+		else if (repl_pctx->gtp_version == GTP_V1)
 			netdev_dbg(dev, "GTPv1-U: update tunnel id = %x/%x (pdp %p)\n",
-				   pctx->u.v1.i_tei, pctx->u.v1.o_tei, pctx);
+				   repl_pctx->u.v1.i_tei, repl_pctx->u.v1.o_tei, repl_pctx);
 
 		return 0;
 
 	}
+
+	if (info->nlhdr->nlmsg_flags & NLM_F_REPLACE)
+		return -ENXIO;
 
 	pctx = kmalloc(sizeof(struct pdp_ctx), GFP_KERNEL);
 	if (pctx == NULL)
