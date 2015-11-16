@@ -957,7 +957,7 @@ static int ipv4_pdp_add(struct net_device *dev, struct genl_info *info)
 	struct gtp_instance *gti = netdev_priv(dev);
 	struct pdp_ctx *pctx;
 	u16 flow = 0;
-	u32 gtp_version, link, sgsn_addr, ms_addr, hash_ms, hash_tid;
+	u32 gtp_version, sgsn_addr, ms_addr, hash_ms, hash_tid;
 	u64 tid;
 	bool found = false;
 
@@ -986,7 +986,6 @@ static int ipv4_pdp_add(struct net_device *dev, struct genl_info *info)
 		flow = nla_get_u16(info->attrs[GTPA_FLOW]);
 	}
 
-	link = nla_get_u32(info->attrs[GTPA_LINK]);
 	sgsn_addr = nla_get_u32(info->attrs[GTPA_SGSN_ADDRESS]);
 	ms_addr = nla_get_u32(info->attrs[GTPA_MS_ADDRESS]);
 
