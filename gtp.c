@@ -1321,35 +1321,30 @@ static int __init gtp_init(void)
 
 	get_random_bytes(&gtp_h_initval, sizeof(gtp_h_initval));
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 13, 0)
-	err = genl_register_family_with_ops(&gtp_genl_family, gtp_genl_ops);
-	if (err < 0)
-		return err;
-#else
-	err = genl_register_family_with_ops(&gtp_genl_family,
-					    gtp_genl_ops,
-					    ARRAY_SIZE(gtp_genl_ops));
-	if (err < 0)
-		return err;
-#endif
 	err = rtnl_link_register(&gtp_link_ops);
 	if (err < 0)
-		goto err1;
+		goto error_out;
+
+	err = genl_register_family_with_ops(&gtp_genl_family, gtp_genl_ops);
+	if (err < 0)
+		goto unreg_rtnl_link;
 
 	pr_info("GTP module loaded (pdp ctx size %Zd bytes)\n",
 		sizeof(struct pdp_ctx));
 	return 0;
-err1:
+
+unreg_rtnl_link:
+	rtnl_link_unregister(&gtp_link_ops);
+error_out:
 	pr_err("error loading GTP module loaded\n");
-	genl_unregister_family(&gtp_genl_family);
 	return err;
 }
 late_initcall(gtp_init);
 
 static void __exit gtp_fini(void)
 {
-	rtnl_link_unregister(&gtp_link_ops);
 	genl_unregister_family(&gtp_genl_family);
+	rtnl_link_unregister(&gtp_link_ops);
 
 	pr_info("GTP module unloaded\n");
 }
