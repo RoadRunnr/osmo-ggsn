@@ -330,6 +330,8 @@ static int gtp_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	if (!gti)
 		goto user;
 
+	netdev_dbg(gti->dev, "encap_recv %p\n", sk);
+
 	switch (udp_sk(sk)->encap_type) {
 	case UDP_ENCAP_GTP0:
 		netdev_dbg(gti->dev, "received GTP0 packet\n");
@@ -893,6 +895,8 @@ static int gtp_encap_enable(struct net_device *dev, struct gtp_instance *gti,
 	struct socket *sock0, *sock1u;
 	struct sock *sk;
 
+	netdev_dbg(dev, "enable gtp on %d, %d\n", fd_gtp0, fd_gtp1);
+
 	sock0 = sockfd_lookup(fd_gtp0, &err);
 	if (sock0 == NULL) {
 		netdev_dbg(dev, "socket fd=%d not found (gtp0)\n", fd_gtp0);
@@ -917,6 +921,8 @@ static int gtp_encap_enable(struct net_device *dev, struct gtp_instance *gti,
 		err = -EINVAL;
 		goto err2;
 	}
+
+	netdev_dbg(dev, "enable gtp on %p, %p\n", sock0, sock1u);
 
 	gti->sock0 = sock0;
 	gti->sock1u = sock1u;
