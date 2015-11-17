@@ -740,7 +740,7 @@ static int gtp_encap_enable(struct net_device *dev, struct gtp_instance *gti,
 static int gtp_newlink(struct net *src_net, struct net_device *dev,
 			struct nlattr *tb[], struct nlattr *data[])
 {
-	struct gtp_net *gn = net_generic(src_net, gtp_net_id);
+	struct gtp_net *gn;
 	struct net_device *real_dev;
 	struct gtp_instance *gti;
 	int hashsize, err, fd0, fd1;
@@ -780,6 +780,7 @@ static int gtp_newlink(struct net *src_net, struct net_device *dev,
 	if (err < 0)
 		goto err1;
 
+	gn = net_generic(dev_net(dev), gtp_net_id);
 	list_add_rcu(&gti->list, &gn->gtp_instance_list);
 
 	netdev_dbg(dev, "registered new interface\n");
@@ -846,6 +847,19 @@ static struct rtnl_link_ops gtp_link_ops __read_mostly = {
 	.get_size	= gtp_get_size,
 	.fill_info	= gtp_fill_info,
 };
+
+static struct net *gtp_genl_get_net(struct net *src_net, struct nlattr *tb[])
+{
+	struct net *net;
+	/* Examine the link attributes and figure out which
+	 * network namespace we are talking about.
+	 */
+	if (tb[GTPA_NET_NS_FD])
+		net = get_net_ns_by_fd(nla_get_u32(tb[GTPA_NET_NS_FD]));
+	else
+		net = get_net(src_net);
+	return net;
+}
 
 static int gtp_hashtable_new(struct gtp_instance *gti, int hsize)
 {
@@ -1065,7 +1079,7 @@ static int ipv4_pdp_add(struct net_device *dev, struct genl_info *info)
 
 static int gtp_genl_tunnel_new(struct sk_buff *skb, struct genl_info *info)
 {
-	struct net *net = sock_net(skb->sk);
+	struct net *net;
 	struct net_device *dev;
 
 	if (!info->attrs[GTPA_VERSION] ||
@@ -1074,6 +1088,10 @@ static int gtp_genl_tunnel_new(struct sk_buff *skb, struct genl_info *info)
 	    !info->attrs[GTPA_MS_ADDRESS] ||
 	    !info->attrs[GTPA_TID])
 		return -EINVAL;
+
+	net = gtp_genl_get_net(sock_net(skb->sk), info->attrs);
+	if (IS_ERR(net))
+		return PTR_ERR(net);
 
 	/* Check if there's an existing gtpX device to configure */
 	dev = gtp_find_dev(net, nla_get_u32(info->attrs[GTPA_LINK]));
@@ -1085,7 +1103,7 @@ static int gtp_genl_tunnel_new(struct sk_buff *skb, struct genl_info *info)
 
 static int gtp_genl_tunnel_delete(struct sk_buff *skb, struct genl_info *info)
 {
-	struct net *net = sock_net(skb->sk);
+	struct net *net;
 	struct gtp_instance *gti;
 	struct net_device *dev;
 	struct pdp_ctx *pctx;
@@ -1112,6 +1130,10 @@ static int gtp_genl_tunnel_delete(struct sk_buff *skb, struct genl_info *info)
 	/* GTPv1 allows 32-bits tunnel IDs */
 	if (gtp_version == GTP_V1 && tid > UINT_MAX)
 		return -EINVAL;
+
+	net = gtp_genl_get_net(sock_net(skb->sk), info->attrs);
+	if (IS_ERR(net))
+		return PTR_ERR(net);
 
 	/* Check if there's an existing gtpX device to configure */
 	dev = gtp_find_dev(net, nla_get_u32(info->attrs[GTPA_LINK]));
@@ -1181,7 +1203,7 @@ nla_put_failure:
 
 static int gtp_genl_tunnel_get(struct sk_buff *skb, struct genl_info *info)
 {
-	struct net *net = sock_net(skb->sk);
+	struct net *net;
 	struct net_device *dev;
 	struct gtp_instance *gti;
 	struct pdp_ctx *pctx = NULL;
@@ -1201,6 +1223,10 @@ static int gtp_genl_tunnel_get(struct sk_buff *skb, struct genl_info *info)
 	default:
 		return -EINVAL;
 	}
+
+	net = gtp_genl_get_net(sock_net(skb->sk), info->attrs);
+	if (IS_ERR(net))
+		return PTR_ERR(net);
 
 	/* Check if there's an existing gtpX device to configure */
 	dev = gtp_find_dev(net, nla_get_u32(info->attrs[GTPA_LINK]));
@@ -1310,6 +1336,7 @@ static struct nla_policy gtp_genl_policy[GTPA_MAX + 1] = {
 	[GTPA_SGSN_ADDRESS]	= { .type = NLA_NESTED, },
 	[GTPA_MS_ADDRESS]	= { .type = NLA_NESTED, },
 	[GTPA_FLOW]		= { .type = NLA_U16, },
+	[GTPA_NET_NS_FD]	= { .type = NLA_U32, },
 };
 
 static const struct genl_ops gtp_genl_ops[] = {
