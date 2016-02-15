@@ -452,6 +452,21 @@ ip4_route_output_gtp(struct net *net, struct flowi4 *fl4,
 	return ip_route_output_key(net, fl4);
 }
 
+static struct dst_entry *
+ip6_route_output_gtp(struct net *net, struct flowi6 *fl6,
+		     const struct sock *sk,
+		     struct in6_addr *daddr)
+{
+	memset(fl6, 0, sizeof(*fl6));
+	fl6->flowi6_oif = sk->sk_bound_dev_if;
+	fl6->daddr = *daddr;
+	fl6->saddr = inet6_sk(sk)->saddr;
+	fl6->flowi6_tos = RT_CONN_FLAGS(sk);
+	fl6->flowi6_proto = sk->sk_protocol;
+
+	return ip6_route_output(net, NULL, fl6);
+}
+
 static inline void
 gtp0_push_header(struct sk_buff *skb, struct pdp_ctx *pctx)
 {
@@ -524,8 +539,12 @@ struct gtp_pktinfo {
 	};
 	union {
 		struct flowi4	fl4;
+		struct flowi6	fl6;
 	};
-	struct rtable		*rt;
+	union {
+		struct rtable		*rt;
+		struct dst_entry	*ndst;
+	};
 	struct pdp_ctx		*pctx;
 	struct net_device	*dev;
 };
@@ -634,11 +653,101 @@ err:
 	return -EBADMSG;
 }
 
+static inline void
+gtp_set_pktinfo_ipv6(struct gtp_pktinfo *pktinfo, struct sock *sk,
+		     struct ipv6hdr *ip6h,
+		     struct pdp_ctx *pctx, struct dst_entry *ndst,
+		     struct flowi6 *fl6, struct net_device *dev)
+{
+	pktinfo->sk     = sk;
+	pktinfo->ip6h	= ip6h;
+	pktinfo->pctx	= pctx;
+	pktinfo->ndst	= ndst;
+	pktinfo->fl6	= *fl6;
+	pktinfo->dev	= dev;
+}
+
 static int gtp_ip6_prepare_xmit(struct sk_buff *skb, struct net_device *dev,
 				struct gtp_pktinfo *pktinfo)
 {
-	/* TODO IPV6 support */
+	struct gtp_instance *gti = netdev_priv(dev);
+	struct sock *sk;
+	struct ipv6hdr *ipv6h;
+	struct pdp_ctx *pctx;
+	struct dst_entry *ndst;
+	struct flowi6 fl6;
+	int mtu;
+
+	/* Read the IP destination address and resolve the PDP context.
+	 * Prepend PDP header with TEI/TID from PDP ctx.
+	 */
+	ipv6h = ipv6_hdr(skb);
+	pctx = ipv6_pdp_find(gti, &ipv6h->daddr);
+	if (!pctx) {
+		netdev_dbg(dev, "no PDP ctx found for this packet, skip\n");
+		return -ENOENT;
+	}
+	netdev_dbg(dev, "found PDP context %p\n", pctx);
+
+	/* Obtain route for the new encapsulated GTP packet */
+	switch (pctx->gtp_version) {
+	case GTP_V0:
+		sk = gti->sock0->sk;
+		break;
+	case GTP_V1:
+		sk = gti->sock1u->sk;
+		break;
+	default:
+		return -ENOENT;
+	}
+
+	ndst = ip6_route_output_gtp(sock_net(sk), &fl6,
+				    gti->sock0->sk,
+				    &pctx->sgsn_addr.ip6);
+	if (IS_ERR(ndst)) {
+		netdev_dbg(dev, "no route to SSGN %pI6\n",
+			   &pctx->sgsn_addr.ip6.s6_addr);
+		dev->stats.tx_carrier_errors++;
+		goto err;
+	}
+
+	/* There is a routing loop */
+	if (ndst->dev == dev) {
+		netdev_dbg(dev, "circular route to SSGN %pI6\n",
+			   &pctx->sgsn_addr.ip6);
+		dev->stats.collisions++;
+		goto err_dst;
+	}
+
+	skb_dst_drop(skb);
+
+	mtu = dst_mtu(ndst) - dev->hard_header_len -
+		sizeof(struct ipv6hdr) - sizeof(struct udphdr);
+	switch (pctx->gtp_version) {
+	case GTP_V0:
+		mtu -= sizeof(struct gtp0_header);
+		break;
+	case GTP_V1:
+		mtu -= sizeof(struct gtp1_header);
+		break;
+	}
+	ndst->ops->update_pmtu(ndst, NULL, skb, mtu);
+
+	if (!skb_is_gso(skb) && skb->len > mtu) {
+		netdev_dbg(dev, "packet too big, fragmentation needed\n");
+		memset(IPCB(skb), 0, sizeof(*IPCB(skb)));
+		icmp_send(skb, ICMP_DEST_UNREACH, ICMP_FRAG_NEEDED,
+			  htonl(mtu));
+		goto err_dst;
+	}
+
+	gtp_set_pktinfo_ipv6(pktinfo, sk, ipv6h, pctx, ndst, &fl6, dev);
+
 	return 0;
+err_dst:
+	dst_release(ndst);
+err:
+	return -EBADMSG;
 }
 
 static inline int
@@ -657,15 +766,23 @@ gtp_udp_tunnel_xmit(struct sk_buff *skb, __be16 port,
 }
 
 static inline int
-gtp_ip6tunnel_xmit(struct sk_buff *skb, struct gtp_pktinfo *pktinfo)
+gtp_ip6tunnel_xmit(struct sk_buff *skb, __be16 port,
+		   struct gtp_pktinfo *pktinfo)
 {
-	/* TODO IPV6 support */
+	netdev_dbg(pktinfo->dev, "gtp -> IP src: %pI6 dst: %pI6\n",
+		   &pktinfo->ip6h->saddr, &pktinfo->ip6h->daddr);
+
+	return udp_tunnel6_xmit_skb(pktinfo->ndst, pktinfo->sk, skb,
+				    pktinfo->ndst->dev,
+				    &pktinfo->fl6.saddr,
+				    &pktinfo->fl6.daddr,
+				    0,
+				    ip6_dst_hoplimit(pktinfo->ndst),
+				    port, port, false);
 }
 
 static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 {
-	struct udphdr *uh;
-	unsigned int payload_len;
 	struct gtp_pktinfo pktinfo;
 	unsigned int proto = ntohs(skb->protocol);
 	int gtph_len, err = -EINVAL;
@@ -713,28 +830,9 @@ static netdev_tx_t gtp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	case ETH_P_IP:
 		err = gtp_udp_tunnel_xmit(skb, gtph_port, &pktinfo);
 		break;
+
 	case ETH_P_IPV6:
-		/* Annotate length of the encapsulated packet */
-		payload_len = skb->len;
-
-		/* Push down and install the UDP header. */
-		skb_push(skb, sizeof(struct udphdr));
-		skb_reset_transport_header(skb);
-
-		uh = udp_hdr(skb);
-
-		uh->source = uh->dest = gtph_port;
-		uh->len = htons(sizeof(struct udphdr) + payload_len + gtph_len);
-		uh->check = 0;
-
-		netdev_dbg(dev, "gtp -> UDP src: %u dst: %u (len %u)\n",
-			   ntohs(uh->source), ntohs(uh->dest), ntohs(uh->len));
-
-		nf_reset(skb);
-
-		netdev_dbg(dev, "Good, now packet leaving from GGSN to SGSN\n");
-
-		err = gtp_ip6tunnel_xmit(skb, &pktinfo);
+		err = gtp_ip6tunnel_xmit(skb, gtph_port, &pktinfo);
 		break;
 	}
 
